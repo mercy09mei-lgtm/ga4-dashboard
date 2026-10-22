@@ -193,10 +193,12 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
     wb = openpyxl.load_workbook(tmp_name)
     ws = wb.active
 
+    # 1. 填充周期标签
     for r in [2, 8, 14, 20, 26]:
         ws.cell(r, 1, date_info["cur_label"])
         ws.cell(r + 1, 1, date_info["prev_label"])
 
+    # 2. 填充下载量
     for c in range(2, 18):
         h = ws.cell(1, c).value
         if h:
@@ -205,6 +207,7 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
             ws.cell(2, c, match["cur"] if match else 0)
             ws.cell(3, c, match["prev"] if match else 0)
 
+    # 3. 填充购买量
     for plan_key, head_r, cur_r, prev_r in [("lifetime", 7, 8, 9), ("12M", 13, 14, 15), ("3M", 19, 20, 21), ("1M", 25, 26, 27)]:
         cur_plan = buy_data.get(plan_key, {})
         for c in range(2, 16):
@@ -215,17 +218,34 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
                 ws.cell(cur_r, c, match["cur"] if match else 0)
                 ws.cell(prev_r, c, match["prev"] if match else 0)
 
+    # 4. 填充流量数据及自动写入公式（差额、日均、环比）
     if tf_data:
-        for r in range(33, 40):
-            ch = str(ws.cell(r, 1).value or "").strip()
-            ws.cell(r, 2, tf_data["cur"].get(ch, 0))
-            ws.cell(r, 3, tf_data["prev"].get(ch, 0))
-        ws.cell(32, 2, sum(tf_data["cur"].values()))
-        ws.cell(32, 3, sum(tf_data["prev"].values()))
         days = date_info["days"]
         div = days if date_info["type"] == "month" else 7
-        ws.cell(32, 5, f"=B32/{div}")
-        ws.cell(32, 6, f"=E32-(C32/{div})")
+
+        # 写入渠道行 (Row 33 ~ 39)
+        for r in range(33, 40):
+            ch = str(ws.cell(r, 1).value or "").strip()
+            cur_val = tf_data["cur"].get(ch, 0)
+            prev_val = tf_data["prev"].get(ch, 0)
+            ws.cell(r, 2, cur_val)                  # B列: 本周期流量
+            ws.cell(r, 3, prev_val)                 # C列: 上一周期流量
+            ws.cell(r, 4, f"=B{r}-C{r}")            # D列: 差额
+            ws.cell(r, 9, f"=IF(C{r}=0, 0, (B{r}-C{r})/C{r})")  # I列: 环比 (防除以0)
+
+        # 写入总流量汇总行 (Row 32)
+        total_cur = sum(tf_data["cur"].values())
+        total_prev = sum(tf_data["prev"].values())
+        ws.cell(32, 2, total_cur)                   # B32: 总流量本周期
+        ws.cell(32, 3, total_prev)                  # C32: 总流量上周期
+        ws.cell(32, 4, "=B32-C32")                  # D32: 差额
+        ws.cell(32, 5, f"=B32/{div}")               # E32: 本周期的日均流量
+        ws.cell(32, 6, f"=E32-(C32/{div})")         # F32: 日均流量差额
+        ws.cell(32, 7, "=B34+B35")                  # G32: 自然+引荐本期
+        ws.cell(32, 8, "=C34+C35")                  # H32: 自然+引荐上期
+        ws.cell(32, 9, "=IF(H32=0, 0, (G32-H32)/H32)")  # I32: 自然引荐环比
+        ws.cell(32, 10, "=B32/30")                  # J32: 本周期日均(/30)
+        ws.cell(32, 11, "=C32/30")                  # K32: 上周期日均(/30)
 
     wb.save(tmp_name)
     with open(tmp_name, "rb") as f:
