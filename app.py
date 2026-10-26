@@ -124,7 +124,6 @@ def parse_download_csv_content(text):
             if not cur_period_label: cur_period_label = label
             elif not prev_period_label and label != cur_period_label: prev_period_label = label
 
-            # 读取 GA4 官方去重后的总计
             if not current_key and first_col == "":
                 tot_val = safe_parse_val(row[totals_idx]) if len(row) > abs(totals_idx) else 0.0
                 if label == cur_period_label:
@@ -176,7 +175,6 @@ def parse_buy_csv_content(text):
             if not cur_period_label: cur_period_label = label
             elif not prev_period_label and label != cur_period_label: prev_period_label = label
 
-            # 读取 GA4 官方去重后的总计 (如 87 vs 110)
             if not current_key and first_col == "":
                 if label == cur_period_label:
                     ga4_totals["cur"] = int(val)
@@ -238,7 +236,7 @@ def parse_traffic_csv_content(text):
                 traffic[current_period][channel] = users
     return traffic
 
-def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
+def generate_report_excel(template_path, date_info, dl_data, dl_ga4_totals, buy_data, buy_ga4_totals, tf_data):
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_name = tmp.name
 
@@ -246,10 +244,12 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
     wb = openpyxl.load_workbook(tmp_name)
     ws = wb.active
 
+    # 1. 周期标签
     for r in [2, 8, 14, 20, 26]:
         ws.cell(r, 1, date_info["cur_label"])
         ws.cell(r + 1, 1, date_info["prev_label"])
 
+    # 2. 填充下载量（各单品分别填入，最后一列保留 SUM 算术求和）
     for c in range(2, 18):
         h = ws.cell(1, c).value
         if h:
@@ -257,7 +257,11 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
             match = next((v for k, v in dl_data.items() if " ".join(k.split()) == hc), None)
             ws.cell(2, c, match["cur"] if match else 0)
             ws.cell(3, c, match["prev"] if match else 0)
+    # 单品总计公式
+    ws.cell(2, 18, "=SUM(B2:Q2)")
+    ws.cell(3, 18, "=SUM(B3:Q3)")
 
+    # 3. 填充购买量（各单品分别填入，最后一列保留 SUM 算术求和）
     for plan_key, head_r, cur_r, prev_r in [("lifetime", 7, 8, 9), ("12M", 13, 14, 15), ("3M", 19, 20, 21), ("1M", 25, 26, 27)]:
         cur_plan = buy_data.get(plan_key, {})
         for c in range(2, 16):
@@ -267,7 +271,10 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
                 match = next((v for k, v in cur_plan.items() if " ".join(k.split()) == hc), None)
                 ws.cell(cur_r, c, match["cur"] if match else 0)
                 ws.cell(prev_r, c, match["prev"] if match else 0)
+        ws.cell(cur_r, 16, f"=SUM(B{cur_r}:O{cur_r})")
+        ws.cell(prev_r, 16, f"=SUM(B{prev_r}:O{prev_r})")
 
+    # 4. 流量与公式 (Row 31~39)
     if tf_data:
         days = date_info["days"]
         div = days if date_info["type"] == "month" else 7
@@ -293,6 +300,64 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
         ws.cell(32, 9, "=IF(H32=0, 0, (G32-H32)/H32)")
         ws.cell(32, 10, "=B32/30")
         ws.cell(32, 11, "=C32/30")
+
+    # 5. 填入核心概览汇总表格 (Row 41~46)
+    # 取 GA4 官方去重后的下载与购买总数
+    dl_c_tot = dl_ga4_totals["cur"] if dl_ga4_totals["cur"] > 0 else sum(v["cur"] for v in dl_data.values())
+    dl_p_tot = dl_ga4_totals["prev"] if dl_ga4_totals["prev"] > 0 else sum(v["prev"] for v in dl_data.values())
+
+    buy_c_tot = buy_ga4_totals["cur"] if buy_ga4_totals["cur"] > 0 else sum(sum(prod["cur"] for prod in p.values()) for p in buy_data.values())
+    buy_p_tot = buy_ga4_totals["prev"] if buy_ga4_totals["prev"] > 0 else sum(sum(prod["prev"] for prod in p.values()) for p in buy_data.values())
+
+    # 表头行 41
+    ws.cell(41, 1, "指标")
+    ws.cell(41, 2, date_info["cur_label"])
+    ws.cell(41, 3, date_info["prev_label"])
+    ws.cell(41, 4, "环比")
+    ws.cell(41, 5, "状态")
+
+    # 42行: 自然+引荐
+    ws.cell(42, 1, "自然+引荐")
+    ws.cell(42, 2, "=G32")
+    ws.cell(42, 3, "=H32")
+    ws.cell(42, 4, "=IF(C42=0, 0, (B42-C42)/C42)")
+    ws.cell(42, 5, '=IF(D42>0.005, "上涨", IF(D42<-0.005, "下降", "正常"))')
+
+    # 43行: 下载量 (GA4官方去重总量)
+    ws.cell(43, 1, "下载量")
+    ws.cell(43, 2, dl_c_tot)
+    ws.cell(43, 3, dl_p_tot)
+    ws.cell(43, 4, "=IF(C43=0, 0, (B43-C43)/C43)")
+    ws.cell(43, 5, '=IF(D43>0.005, "上涨", IF(D43<-0.005, "下降", "正常"))')
+
+    # 44行: 购买事件数 (GA4官方去重总量)
+    ws.cell(44, 1, "购买事件数")
+    ws.cell(44, 2, buy_c_tot)
+    ws.cell(44, 3, buy_p_tot)
+    ws.cell(44, 4, "=IF(C44=0, 0, (B44-C44)/C44)")
+    ws.cell(44, 5, '=IF(D44>0.005, "上涨", IF(D44<-0.005, "下降", "正常"))')
+
+    # 45行: 下载转化率
+    ws.cell(45, 1, "下载转化率")
+    ws.cell(45, 2, "=IF(B42=0, 0, B43/B42)")
+    ws.cell(45, 3, "=IF(C42=0, 0, C43/C42)")
+    ws.cell(45, 4, "=B45-C45")
+    ws.cell(45, 5, '=IF(D45>0.0005, "上涨", IF(D45<-0.0005, "下降", "正常"))')
+
+    # 46行: 购买转化率
+    ws.cell(46, 1, "购买转化率")
+    ws.cell(46, 2, "=IF(B43=0, 0, B44/B43)")
+    ws.cell(46, 3, "=IF(C43=0, 0, C44/C43)")
+    ws.cell(46, 4, "=B46-C46")
+    ws.cell(46, 5, '=IF(D46>0.0005, "上涨", IF(D46<-0.0005, "下降", "正常"))')
+
+    # 设置百分比格式
+    for r in [42, 43, 44]:
+        ws.cell(r, 4).number_format = '0.00%'
+    for r in [45, 46]:
+        ws.cell(r, 2).number_format = '0.00%'
+        ws.cell(r, 3).number_format = '0.00%'
+        ws.cell(r, 4).number_format = '+0.00%;-0.00%;0.00%'
 
     wb.save(tmp_name)
     with open(tmp_name, "rb") as f:
@@ -346,7 +411,7 @@ if uploaded_files:
         top_c2.metric("当前对比周期", f"{date_info['cur_label']} vs {date_info['prev_label']}")
 
         if os.path.exists(TEMPLATE_FILE):
-            excel_bytes = generate_report_excel(TEMPLATE_FILE, date_info, dl_data, buy_data, tf_data)
+            excel_bytes = generate_report_excel(TEMPLATE_FILE, date_info, dl_data, dl_ga4_totals, buy_data, buy_ga4_totals, tf_data)
             output_name = f"GA4_Report_{date_info['file_tag']}.xlsx"
             top_c3.download_button(
                 label=f"📥 导出并下载标准化报表 ({output_name})",
@@ -358,13 +423,12 @@ if uploaded_files:
 
         st.markdown("---")
 
-        # ================= 核心概览指标卡（直接对接 GA4 官方去重数据） =================
+        # ================= 核心概览指标卡 =================
         st.subheader("📌 核心指标概览看板")
 
         nat_cur = (tf_data["cur"].get("Organic Search", 0) + tf_data["cur"].get("Referral", 0)) if tf_data else 0
         nat_prev = (tf_data["prev"].get("Organic Search", 0) + tf_data["prev"].get("Referral", 0)) if tf_data else 0
 
-        # 直接采用 GA4 官方去重总数（如 212 vs 199 和 87 vs 110）
         dl_cur_total = dl_ga4_totals["cur"] if dl_ga4_totals["cur"] > 0 else sum(v["cur"] for v in dl_data.values())
         dl_prev_total = dl_ga4_totals["prev"] if dl_ga4_totals["prev"] > 0 else sum(v["prev"] for v in dl_data.values())
 
@@ -381,12 +445,12 @@ if uploaded_files:
             return (c - p) / p
 
         def get_status(diff):
-            if abs(diff) < 0.01: return "正常"
+            if abs(diff) < 0.005: return "正常"
             return "上涨" if diff > 0 else "下降"
 
         overview_rows = [
             {
-                "指标": "自然+引荐流量",
+                "指标": "自然+引荐",
                 f"{date_info['cur_label']}": f"{nat_cur:,}",
                 f"{date_info['prev_label']}": f"{nat_prev:,}",
                 "环比": f"{calc_ratio(nat_cur, nat_prev)*100:+.2f}%",
