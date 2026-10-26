@@ -79,28 +79,43 @@ def analyze_date_info_from_text(text):
 
 def parse_download_csv_content(text):
     rows = list(csv.reader(text.splitlines()))
-    desktop_idx, mobile_idx = 2, 3
+    desktop_idx, mobile_idx, tablet_idx = 2, 3, None
+
+    # 动态定位设备列索引（desktop, mobile, tablet）
     for row in rows[:15]:
-        if "设备类别" in row:
+        if any("设备类别" in str(cell) for cell in row):
             for idx, val in enumerate(row):
-                if val.strip().lower() == "desktop": desktop_idx = idx
-                elif val.strip().lower() == "mobile": mobile_idx = idx
+                v_clean = val.strip().lower()
+                if v_clean == "desktop":
+                    desktop_idx = idx
+                elif v_clean == "mobile":
+                    mobile_idx = idx
+                elif v_clean == "tablet":
+                    tablet_idx = idx
             break
+
+    def safe_parse_val(raw_str):
+        if not raw_str or raw_str.strip() in ['', '-', 'None']:
+            return 0.0
+        return float(raw_str.replace(',', '').strip())
 
     cur_period_label, prev_period_label = None, None
     current_key = None
     data = {}
 
     for row in rows:
-        if not row: continue
+        if not row:
+            continue
         first_col = row[0].strip()
         if first_col.startswith('http') or any(first_col.endswith(ext) for ext in ['.exe', '.dmg', '.apk']):
             current_key = first_col
 
         if len(row) > 1 and " - " in row[1] and "变动百分比" not in row[1]:
             label = row[1].strip()
-            if not cur_period_label: cur_period_label = label
-            elif not prev_period_label and label != cur_period_label: prev_period_label = label
+            if not cur_period_label:
+                cur_period_label = label
+            elif not prev_period_label and label != cur_period_label:
+                prev_period_label = label
 
             if current_key:
                 target_col = None
@@ -109,9 +124,13 @@ def parse_download_csv_content(text):
                         target_col = col_name
                         break
                 if target_col:
-                    col_to_pick = mobile_idx if target_col == "spotify安卓" else desktop_idx
-                    raw_val = row[col_to_pick] if len(row) > col_to_pick else "0"
-                    val = float(raw_val.replace(',', '')) if raw_val not in ['', '-'] else 0.0
+                    # 规则：spotify安卓取 mobile + tablet，其他程序只取 desktop
+                    if target_col == "spotify安卓":
+                        m_val = safe_parse_val(row[mobile_idx]) if len(row) > mobile_idx else 0.0
+                        t_val = safe_parse_val(row[tablet_idx]) if tablet_idx is not None and len(row) > tablet_idx else 0.0
+                        val = m_val + t_val
+                    else:
+                        val = safe_parse_val(row[desktop_idx]) if len(row) > desktop_idx else 0.0
 
                     if target_col not in data:
                         data[target_col] = {"cur": 0, "prev": 0}
@@ -128,17 +147,21 @@ def parse_buy_csv_content(text):
     data = {"lifetime": {}, "12M": {}, "3M": {}, "1M": {}}
 
     for row in rows:
-        if not row: continue
+        if not row:
+            continue
         first_col = row[0].strip()
         if first_col.startswith("buy_"):
             current_key = first_col
 
         if len(row) > 1 and " - " in row[1] and "变动百分比" not in row[1]:
             label = row[1].strip()
-            val = float(row[2].replace(',', '')) if len(row) > 2 and row[2] not in ['', '-'] else 0.0
+            raw_v = row[2] if len(row) > 2 else "0"
+            val = float(raw_v.replace(',', '')) if raw_v not in ['', '-', 'None'] else 0.0
 
-            if not cur_period_label: cur_period_label = label
-            elif not prev_period_label and label != cur_period_label: prev_period_label = label
+            if not cur_period_label:
+                cur_period_label = label
+            elif not prev_period_label and label != cur_period_label:
+                prev_period_label = label
 
             if current_key:
                 parts = current_key.split('_')
@@ -165,11 +188,14 @@ def parse_traffic_csv_content(text):
 
     for line in lines:
         line_str = line.strip()
-        if not line_str: continue
+        if not line_str:
+            continue
 
         if line_str.startswith("# 开始日期："):
-            if current_period is None: current_period = "cur"
-            elif current_period == "cur": current_period = "prev"
+            if current_period is None:
+                current_period = "cur"
+            elif current_period == "cur":
+                current_period = "prev"
             continue
 
         if line_str.startswith('#') or "带来用户首次互动的主渠道组" in line_str:
@@ -179,8 +205,10 @@ def parse_traffic_csv_content(text):
             cols = [c.strip() for c in line_str.split(',')]
             if cols and cols[0]:
                 channel = cols[0]
-                try: users = int(cols[1].replace(',', ''))
-                except: users = 0
+                try:
+                    users = int(cols[1].replace(',', ''))
+                except:
+                    users = 0
                 traffic[current_period][channel] = users
     return traffic
 
@@ -231,7 +259,7 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
             ws.cell(r, 2, cur_val)                  # B列: 本周期流量
             ws.cell(r, 3, prev_val)                 # C列: 上一周期流量
             ws.cell(r, 4, f"=B{r}-C{r}")            # D列: 差额
-            ws.cell(r, 9, f"=IF(C{r}=0, 0, (B{r}-C{r})/C{r})")  # I列: 环比 (防除以0)
+            ws.cell(r, 9, f"=IF(C{r}=0, 0, (B{r}-C{r})/C{r})")  # I列: 环比
 
         # 写入总流量汇总行 (Row 32)
         total_cur = sum(tf_data["cur"].values())
@@ -274,7 +302,6 @@ with st.sidebar:
 
 # 核心处理与呈现
 if uploaded_files:
-    # 自动识别上传的各个 CSV 文件
     dl_text, buy_text, tf_text = None, None, None
     for f in uploaded_files:
         name = f.name.lower()
@@ -289,7 +316,6 @@ if uploaded_files:
     if not dl_text or not buy_text:
         st.warning("请确保上传的文件中包含 `download.csv` 和 `buy.csv`！")
     else:
-        # 数据解析
         date_info = analyze_date_info_from_text(dl_text)
         dl_data = parse_download_csv_content(dl_text)
         buy_data = parse_buy_csv_content(buy_text)
@@ -327,7 +353,6 @@ if uploaded_files:
             dl_df["差额"] = dl_df.iloc[:, 1] - dl_df.iloc[:, 2]
             dl_df["环比变动"] = dl_df.apply(lambda r: f"{(r['差额'] / r.iloc[2] * 100):.2f}%" if r.iloc[2] != 0 else "-", axis=1)
 
-            # 视图切换控件
             chart_type = st.radio("展现方式：", ["柱状对比图", "折线走势图", "纯数据表格"], horizontal=True, key="dl_view")
 
             if chart_type == "柱状对比图":
