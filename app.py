@@ -38,8 +38,10 @@ PRODUCT_MAP = {
     "sp": "spotify", "spotify": "spotify",
     "all-in-one": "musicOne", "all_in_one": "musicOne", "musicone": "musicOne",
     "az": "amazC", "amazon": "amazC",
-    "tidal": "Tidal", "apc": "Apple", "apple": "Apple",
-    "youtube": "YouTube", "yt": "YouTube", "deezer": "Deezer",
+    "tidal": "Tidal", "td": "Tidal",
+    "apc": "Apple", "apple": "Apple",
+    "youtube": "YouTube", "yt": "YouTube",
+    "deezer": "Deezer", "dz": "Deezer",
 }
 
 PLAN_MAP = {
@@ -78,7 +80,6 @@ def analyze_date_info_from_text(text):
     return {"type": "unknown", "days": 7, "file_tag": "UNKNOWN", "cur_label": "本期", "prev_label": "上期"}
 
 def parse_site_name_from_traffic(text):
-    """从渠道 CSV 提取站点名称"""
     for line in text.splitlines()[:10]:
         match = re.search(r'https?://(?:www\.)?([^/\s\-]+)', line)
         if match:
@@ -91,7 +92,7 @@ def parse_site_name_from_traffic(text):
 
 def parse_download_csv_content(text):
     rows = list(csv.reader(text.splitlines()))
-    desktop_idx, mobile_idx, tablet_idx = 2, 3, None
+    desktop_idx, mobile_idx, tablet_idx, totals_idx = 2, 3, None, -1
 
     for row in rows[:15]:
         if any("设备类别" in str(cell) for cell in row):
@@ -100,6 +101,7 @@ def parse_download_csv_content(text):
                 if v_clean == "desktop": desktop_idx = idx
                 elif v_clean == "mobile": mobile_idx = idx
                 elif v_clean == "tablet": tablet_idx = idx
+                elif v_clean in ["totals", "合计"]: totals_idx = idx
             break
 
     def safe_parse_val(raw_str):
@@ -109,6 +111,7 @@ def parse_download_csv_content(text):
     cur_period_label, prev_period_label = None, None
     current_key = None
     data = {}
+    ga4_totals = {"cur": 0, "prev": 0}
 
     for row in rows:
         if not row: continue
@@ -120,6 +123,14 @@ def parse_download_csv_content(text):
             label = row[1].strip()
             if not cur_period_label: cur_period_label = label
             elif not prev_period_label and label != cur_period_label: prev_period_label = label
+
+            # 读取 GA4 官方去重后的总计
+            if not current_key and first_col == "":
+                tot_val = safe_parse_val(row[totals_idx]) if len(row) > abs(totals_idx) else 0.0
+                if label == cur_period_label:
+                    ga4_totals["cur"] = int(tot_val)
+                else:
+                    ga4_totals["prev"] = int(tot_val)
 
             if current_key:
                 target_col = None
@@ -141,13 +152,15 @@ def parse_download_csv_content(text):
                         data[target_col]["cur"] += int(val)
                     else:
                         data[target_col]["prev"] += int(val)
-    return data
+
+    return data, ga4_totals
 
 def parse_buy_csv_content(text):
     rows = list(csv.reader(text.splitlines()))
     cur_period_label, prev_period_label = None, None
     current_key = None
     data = {"lifetime": {}, "12M": {}, "3M": {}, "1M": {}}
+    ga4_totals = {"cur": 0, "prev": 0}
 
     for row in rows:
         if not row: continue
@@ -163,23 +176,41 @@ def parse_buy_csv_content(text):
             if not cur_period_label: cur_period_label = label
             elif not prev_period_label and label != cur_period_label: prev_period_label = label
 
+            # 读取 GA4 官方去重后的总计 (如 87 vs 110)
+            if not current_key and first_col == "":
+                if label == cur_period_label:
+                    ga4_totals["cur"] = int(val)
+                else:
+                    ga4_totals["prev"] = int(val)
+
             if current_key:
                 parts = current_key.split('_')
-                if len(parts) >= 4:
-                    raw_prod, raw_os = parts[1].lower(), parts[2].lower()
-                    raw_plan = "_".join(parts[3:]).lower()
-                    norm_prod = PRODUCT_MAP.get(raw_prod, raw_prod)
-                    norm_plan = PLAN_MAP.get(raw_plan, raw_plan)
-                    target_col = f"{norm_prod} {raw_os}"
+                if len(parts) == 3:
+                    raw_prod, raw_os, raw_plan = parts[1].lower(), "win", parts[2].lower()
+                elif len(parts) >= 4:
+                    raw_prod = parts[1].lower()
+                    if parts[2].lower() in ["win", "mac", "android"]:
+                        raw_os = parts[2].lower()
+                        raw_plan = "_".join(parts[3:]).lower()
+                    else:
+                        raw_os = "win"
+                        raw_plan = "_".join(parts[2:]).lower()
+                else:
+                    continue
 
-                    if norm_plan in data:
-                        if target_col not in data[norm_plan]:
-                            data[norm_plan][target_col] = {"cur": 0, "prev": 0}
-                        if label == cur_period_label:
-                            data[norm_plan][target_col]["cur"] += int(val)
-                        else:
-                            data[norm_plan][target_col]["prev"] += int(val)
-    return data
+                norm_prod = PRODUCT_MAP.get(raw_prod, raw_prod)
+                norm_plan = PLAN_MAP.get(raw_plan, raw_plan)
+                target_col = f"{norm_prod} {raw_os}"
+
+                if norm_plan in data:
+                    if target_col not in data[norm_plan]:
+                        data[norm_plan][target_col] = {"cur": 0, "prev": 0}
+                    if label == cur_period_label:
+                        data[norm_plan][target_col]["cur"] += int(val)
+                    else:
+                        data[norm_plan][target_col]["prev"] += int(val)
+
+    return data, ga4_totals
 
 def parse_traffic_csv_content(text):
     lines = text.splitlines()
@@ -215,12 +246,10 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
     wb = openpyxl.load_workbook(tmp_name)
     ws = wb.active
 
-    # 1. 周期标签
     for r in [2, 8, 14, 20, 26]:
         ws.cell(r, 1, date_info["cur_label"])
         ws.cell(r + 1, 1, date_info["prev_label"])
 
-    # 2. 下载量
     for c in range(2, 18):
         h = ws.cell(1, c).value
         if h:
@@ -229,7 +258,6 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
             ws.cell(2, c, match["cur"] if match else 0)
             ws.cell(3, c, match["prev"] if match else 0)
 
-    # 3. 购买量
     for plan_key, head_r, cur_r, prev_r in [("lifetime", 7, 8, 9), ("12M", 13, 14, 15), ("3M", 19, 20, 21), ("1M", 25, 26, 27)]:
         cur_plan = buy_data.get(plan_key, {})
         for c in range(2, 16):
@@ -240,7 +268,6 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
                 ws.cell(cur_r, c, match["cur"] if match else 0)
                 ws.cell(prev_r, c, match["prev"] if match else 0)
 
-    # 4. 流量与公式
     if tf_data:
         days = date_info["days"]
         div = days if date_info["type"] == "month" else 7
@@ -277,7 +304,6 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
 # ================= 网页 UI 布局 =================
 st.title("📊 GA4 数据可视化看板与报表系统")
 
-# 侧边栏：文件上传
 with st.sidebar:
     st.header("📂 数据上传区")
     uploaded_files = st.file_uploader(
@@ -305,18 +331,16 @@ if uploaded_files:
         st.warning("请确保上传的文件中包含 `download.csv` 和 `buy.csv`！")
     else:
         date_info = analyze_date_info_from_text(dl_text)
-        dl_data = parse_download_csv_content(dl_text)
-        buy_data = parse_buy_csv_content(buy_text)
+        dl_data, dl_ga4_totals = parse_download_csv_content(dl_text)
+        buy_data, buy_ga4_totals = parse_buy_csv_content(buy_text)
         tf_data = parse_traffic_csv_content(tf_text) if tf_text else None
 
-        # 1. 站点与日均 IP 计算
         site_name = parse_site_name_from_traffic(tf_text) if tf_text else "Sidify.de"
         total_traffic_cur = sum(tf_data["cur"].values()) if tf_data else 0
         days_count = date_info["days"] if date_info["type"] == "month" else 7
         daily_ip = int(round(total_traffic_cur / days_count)) if days_count > 0 else 0
         ip_label = "月日均 IP" if date_info["type"] == "month" else "周日均 IP"
 
-        # 顶部提示与下载按钮
         top_c1, top_c2, top_c3 = st.columns([2, 2, 3])
         top_c1.metric("周期类型", f"{date_info['type'].upper()}报")
         top_c2.metric("当前对比周期", f"{date_info['cur_label']} vs {date_info['prev_label']}")
@@ -334,23 +358,21 @@ if uploaded_files:
 
         st.markdown("---")
 
-        # ================= 核心概览指标卡（新增） =================
+        # ================= 核心概览指标卡（直接对接 GA4 官方去重数据） =================
         st.subheader("📌 核心指标概览看板")
 
-        # 计算概览指标数据
-        # 1. 自然+引荐
         nat_cur = (tf_data["cur"].get("Organic Search", 0) + tf_data["cur"].get("Referral", 0)) if tf_data else 0
         nat_prev = (tf_data["prev"].get("Organic Search", 0) + tf_data["prev"].get("Referral", 0)) if tf_data else 0
-        # 2. 下载量
-        dl_cur_total = sum(v["cur"] for v in dl_data.values())
-        dl_prev_total = sum(v["prev"] for v in dl_data.values())
-        # 3. 购买事件数
-        buy_cur_total = sum(sum(prod["cur"] for prod in p_dict.values()) for p_dict in buy_data.values())
-        buy_prev_total = sum(sum(prod["prev"] for prod in p_dict.values()) for p_dict in buy_data.values())
-        # 4. 下载转化率
+
+        # 直接采用 GA4 官方去重总数（如 212 vs 199 和 87 vs 110）
+        dl_cur_total = dl_ga4_totals["cur"] if dl_ga4_totals["cur"] > 0 else sum(v["cur"] for v in dl_data.values())
+        dl_prev_total = dl_ga4_totals["prev"] if dl_ga4_totals["prev"] > 0 else sum(v["prev"] for v in dl_data.values())
+
+        buy_cur_total = buy_ga4_totals["cur"] if buy_ga4_totals["cur"] > 0 else sum(sum(prod["cur"] for prod in p_dict.values()) for p_dict in buy_data.values())
+        buy_prev_total = buy_ga4_totals["prev"] if buy_ga4_totals["prev"] > 0 else sum(sum(prod["prev"] for prod in p_dict.values()) for p_dict in buy_data.values())
+
         dl_c_rate = (dl_cur_total / nat_cur) if nat_cur > 0 else 0.0
         dl_p_rate = (dl_prev_total / nat_prev) if nat_prev > 0 else 0.0
-        # 5. 购买转化率
         buy_c_rate = (buy_cur_total / dl_cur_total) if dl_cur_total > 0 else 0.0
         buy_p_rate = (buy_prev_total / dl_prev_total) if dl_prev_total > 0 else 0.0
 
@@ -401,19 +423,16 @@ if uploaded_files:
         ]
         overview_df = pd.DataFrame(overview_rows)
 
-        # 站点与日均指标卡横幅展示
         site_col1, site_col2 = st.columns(2)
         site_col1.info(f"🌐 **负责站点**：`{site_name}`")
         site_col2.warning(f"⚡ **{ip_label}**：`{daily_ip:,}`")
 
-        # 渲染样式化概览表格
         st.dataframe(overview_df, use_container_width=True, hide_index=True)
         st.markdown("---")
 
         # ================= 业务明细 Tab 看板 =================
         tab1, tab2, tab3 = st.tabs(["📥 客户端下载量看板", "💰 购买量看板", "🌐 渠道流量看板"])
 
-        # Tab 1: 下载量
         with tab1:
             dl_df = pd.DataFrame([
                 {"产品包": k, f"本期 ({date_info['cur_label']})": v["cur"], f"上期 ({date_info['prev_label']})": v["prev"]}
@@ -432,7 +451,6 @@ if uploaded_files:
             else:
                 st.dataframe(dl_df, use_container_width=True)
 
-        # Tab 2: 购买量
         with tab2:
             plan_choice = st.selectbox("选择套餐周期：", ["Lifetime", "12M", "3M", "1M"])
             target_plan_data = buy_data.get(plan_choice.lower() if plan_choice != "12M" else "12M", {})
@@ -456,7 +474,6 @@ if uploaded_files:
             else:
                 st.info(f"暂无 {plan_choice} 维度的购买数据")
 
-        # Tab 3: 渠道流量
         with tab3:
             if tf_data:
                 channels = list(set(list(tf_data["cur"].keys()) + list(tf_data["prev"].keys())))
