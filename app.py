@@ -77,26 +77,33 @@ def analyze_date_info_from_text(text):
             return {"type": report_type, "days": days_span, "file_tag": file_tag, "cur_label": cur_label, "prev_label": prev_label}
     return {"type": "unknown", "days": 7, "file_tag": "UNKNOWN", "cur_label": "本期", "prev_label": "上期"}
 
+def parse_site_name_from_traffic(text):
+    """从渠道 CSV 提取站点名称"""
+    for line in text.splitlines()[:10]:
+        match = re.search(r'https?://(?:www\.)?([^/\s\-]+)', line)
+        if match:
+            raw_host = match.group(1)
+            parts = raw_host.split('.')
+            if len(parts) >= 2:
+                return f"{parts[0].capitalize()}.{parts[1]}"
+            return raw_host.capitalize()
+    return "Sidify.de"
+
 def parse_download_csv_content(text):
     rows = list(csv.reader(text.splitlines()))
     desktop_idx, mobile_idx, tablet_idx = 2, 3, None
 
-    # 动态定位设备列索引（desktop, mobile, tablet）
     for row in rows[:15]:
         if any("设备类别" in str(cell) for cell in row):
             for idx, val in enumerate(row):
                 v_clean = val.strip().lower()
-                if v_clean == "desktop":
-                    desktop_idx = idx
-                elif v_clean == "mobile":
-                    mobile_idx = idx
-                elif v_clean == "tablet":
-                    tablet_idx = idx
+                if v_clean == "desktop": desktop_idx = idx
+                elif v_clean == "mobile": mobile_idx = idx
+                elif v_clean == "tablet": tablet_idx = idx
             break
 
     def safe_parse_val(raw_str):
-        if not raw_str or raw_str.strip() in ['', '-', 'None']:
-            return 0.0
+        if not raw_str or raw_str.strip() in ['', '-', 'None']: return 0.0
         return float(raw_str.replace(',', '').strip())
 
     cur_period_label, prev_period_label = None, None
@@ -104,18 +111,15 @@ def parse_download_csv_content(text):
     data = {}
 
     for row in rows:
-        if not row:
-            continue
+        if not row: continue
         first_col = row[0].strip()
         if first_col.startswith('http') or any(first_col.endswith(ext) for ext in ['.exe', '.dmg', '.apk']):
             current_key = first_col
 
         if len(row) > 1 and " - " in row[1] and "变动百分比" not in row[1]:
             label = row[1].strip()
-            if not cur_period_label:
-                cur_period_label = label
-            elif not prev_period_label and label != cur_period_label:
-                prev_period_label = label
+            if not cur_period_label: cur_period_label = label
+            elif not prev_period_label and label != cur_period_label: prev_period_label = label
 
             if current_key:
                 target_col = None
@@ -124,7 +128,6 @@ def parse_download_csv_content(text):
                         target_col = col_name
                         break
                 if target_col:
-                    # 规则：spotify安卓取 mobile + tablet，其他程序只取 desktop
                     if target_col == "spotify安卓":
                         m_val = safe_parse_val(row[mobile_idx]) if len(row) > mobile_idx else 0.0
                         t_val = safe_parse_val(row[tablet_idx]) if tablet_idx is not None and len(row) > tablet_idx else 0.0
@@ -147,8 +150,7 @@ def parse_buy_csv_content(text):
     data = {"lifetime": {}, "12M": {}, "3M": {}, "1M": {}}
 
     for row in rows:
-        if not row:
-            continue
+        if not row: continue
         first_col = row[0].strip()
         if first_col.startswith("buy_"):
             current_key = first_col
@@ -158,10 +160,8 @@ def parse_buy_csv_content(text):
             raw_v = row[2] if len(row) > 2 else "0"
             val = float(raw_v.replace(',', '')) if raw_v not in ['', '-', 'None'] else 0.0
 
-            if not cur_period_label:
-                cur_period_label = label
-            elif not prev_period_label and label != cur_period_label:
-                prev_period_label = label
+            if not cur_period_label: cur_period_label = label
+            elif not prev_period_label and label != cur_period_label: prev_period_label = label
 
             if current_key:
                 parts = current_key.split('_')
@@ -188,14 +188,11 @@ def parse_traffic_csv_content(text):
 
     for line in lines:
         line_str = line.strip()
-        if not line_str:
-            continue
+        if not line_str: continue
 
         if line_str.startswith("# 开始日期："):
-            if current_period is None:
-                current_period = "cur"
-            elif current_period == "cur":
-                current_period = "prev"
+            if current_period is None: current_period = "cur"
+            elif current_period == "cur": current_period = "prev"
             continue
 
         if line_str.startswith('#') or "带来用户首次互动的主渠道组" in line_str:
@@ -205,15 +202,12 @@ def parse_traffic_csv_content(text):
             cols = [c.strip() for c in line_str.split(',')]
             if cols and cols[0]:
                 channel = cols[0]
-                try:
-                    users = int(cols[1].replace(',', ''))
-                except:
-                    users = 0
+                try: users = int(cols[1].replace(',', ''))
+                except: users = 0
                 traffic[current_period][channel] = users
     return traffic
 
 def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
-    """将数据填充回内置的 template.xlsx 并生成内存二进制流供下载"""
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_name = tmp.name
 
@@ -221,12 +215,12 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
     wb = openpyxl.load_workbook(tmp_name)
     ws = wb.active
 
-    # 1. 填充周期标签
+    # 1. 周期标签
     for r in [2, 8, 14, 20, 26]:
         ws.cell(r, 1, date_info["cur_label"])
         ws.cell(r + 1, 1, date_info["prev_label"])
 
-    # 2. 填充下载量
+    # 2. 下载量
     for c in range(2, 18):
         h = ws.cell(1, c).value
         if h:
@@ -235,7 +229,7 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
             ws.cell(2, c, match["cur"] if match else 0)
             ws.cell(3, c, match["prev"] if match else 0)
 
-    # 3. 填充购买量
+    # 3. 购买量
     for plan_key, head_r, cur_r, prev_r in [("lifetime", 7, 8, 9), ("12M", 13, 14, 15), ("3M", 19, 20, 21), ("1M", 25, 26, 27)]:
         cur_plan = buy_data.get(plan_key, {})
         for c in range(2, 16):
@@ -246,34 +240,32 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
                 ws.cell(cur_r, c, match["cur"] if match else 0)
                 ws.cell(prev_r, c, match["prev"] if match else 0)
 
-    # 4. 填充流量数据及自动写入公式（差额、日均、环比）
+    # 4. 流量与公式
     if tf_data:
         days = date_info["days"]
         div = days if date_info["type"] == "month" else 7
 
-        # 写入渠道行 (Row 33 ~ 39)
         for r in range(33, 40):
             ch = str(ws.cell(r, 1).value or "").strip()
             cur_val = tf_data["cur"].get(ch, 0)
             prev_val = tf_data["prev"].get(ch, 0)
-            ws.cell(r, 2, cur_val)                  # B列: 本周期流量
-            ws.cell(r, 3, prev_val)                 # C列: 上一周期流量
-            ws.cell(r, 4, f"=B{r}-C{r}")            # D列: 差额
-            ws.cell(r, 9, f"=IF(C{r}=0, 0, (B{r}-C{r})/C{r})")  # I列: 环比
+            ws.cell(r, 2, cur_val)
+            ws.cell(r, 3, prev_val)
+            ws.cell(r, 4, f"=B{r}-C{r}")
+            ws.cell(r, 9, f"=IF(C{r}=0, 0, (B{r}-C{r})/C{r})")
 
-        # 写入总流量汇总行 (Row 32)
         total_cur = sum(tf_data["cur"].values())
         total_prev = sum(tf_data["prev"].values())
-        ws.cell(32, 2, total_cur)                   # B32: 总流量本周期
-        ws.cell(32, 3, total_prev)                  # C32: 总流量上周期
-        ws.cell(32, 4, "=B32-C32")                  # D32: 差额
-        ws.cell(32, 5, f"=B32/{div}")               # E32: 本周期的日均流量
-        ws.cell(32, 6, f"=E32-(C32/{div})")         # F32: 日均流量差额
-        ws.cell(32, 7, "=B34+B35")                  # G32: 自然+引荐本期
-        ws.cell(32, 8, "=C34+C35")                  # H32: 自然+引荐上期
-        ws.cell(32, 9, "=IF(H32=0, 0, (G32-H32)/H32)")  # I32: 自然引荐环比
-        ws.cell(32, 10, "=B32/30")                  # J32: 本周期日均(/30)
-        ws.cell(32, 11, "=C32/30")                  # K32: 上周期日均(/30)
+        ws.cell(32, 2, total_cur)
+        ws.cell(32, 3, total_prev)
+        ws.cell(32, 4, "=B32-C32")
+        ws.cell(32, 5, f"=B32/{div}")
+        ws.cell(32, 6, f"=E32-(C32/{div})")
+        ws.cell(32, 7, "=B34+B35")
+        ws.cell(32, 8, "=C34+C35")
+        ws.cell(32, 9, "=IF(H32=0, 0, (G32-H32)/H32)")
+        ws.cell(32, 10, "=B32/30")
+        ws.cell(32, 11, "=C32/30")
 
     wb.save(tmp_name)
     with open(tmp_name, "rb") as f:
@@ -285,7 +277,7 @@ def generate_report_excel(template_path, date_info, dl_data, buy_data, tf_data):
 # ================= 网页 UI 布局 =================
 st.title("📊 GA4 数据可视化看板与报表系统")
 
-# 侧边栏：文件上传与模板状态
+# 侧边栏：文件上传
 with st.sidebar:
     st.header("📂 数据上传区")
     uploaded_files = st.file_uploader(
@@ -298,20 +290,16 @@ with st.sidebar:
     if os.path.exists(TEMPLATE_FILE):
         st.success("✅ 网站已预置默认 `template.xlsx` 模板")
     else:
-        st.error("❌ 网站目录下未检测到 `template.xlsx`，请放置在同级目录！")
+        st.error("❌ 网站目录下未检测到 `template.xlsx`")
 
-# 核心处理与呈现
 if uploaded_files:
     dl_text, buy_text, tf_text = None, None, None
     for f in uploaded_files:
         name = f.name.lower()
         content = f.getvalue().decode('utf-8', errors='ignore')
-        if "download" in name:
-            dl_text = content
-        elif "buy" in name:
-            buy_text = content
-        elif "用户获取" in name or "渠道" in name:
-            tf_text = content
+        if "download" in name: dl_text = content
+        elif "buy" in name: buy_text = content
+        elif "用户获取" in name or "渠道" in name: tf_text = content
 
     if not dl_text or not buy_text:
         st.warning("请确保上传的文件中包含 `download.csv` 和 `buy.csv`！")
@@ -321,17 +309,22 @@ if uploaded_files:
         buy_data = parse_buy_csv_content(buy_text)
         tf_data = parse_traffic_csv_content(tf_text) if tf_text else None
 
-        # 顶部周期信息提示条
-        col_info1, col_info2, col_info3 = st.columns(3)
-        col_info1.metric("周期类型", f"{date_info['type'].upper()}报")
-        col_info2.metric("当前周期", date_info["cur_label"])
-        col_info3.metric("对比周期", date_info["prev_label"])
+        # 1. 站点与日均 IP 计算
+        site_name = parse_site_name_from_traffic(tf_text) if tf_text else "Sidify.de"
+        total_traffic_cur = sum(tf_data["cur"].values()) if tf_data else 0
+        days_count = date_info["days"] if date_info["type"] == "month" else 7
+        daily_ip = int(round(total_traffic_cur / days_count)) if days_count > 0 else 0
+        ip_label = "月日均 IP" if date_info["type"] == "month" else "周日均 IP"
 
-        # 生成并提供 Excel 下载
+        # 顶部提示与下载按钮
+        top_c1, top_c2, top_c3 = st.columns([2, 2, 3])
+        top_c1.metric("周期类型", f"{date_info['type'].upper()}报")
+        top_c2.metric("当前对比周期", f"{date_info['cur_label']} vs {date_info['prev_label']}")
+
         if os.path.exists(TEMPLATE_FILE):
             excel_bytes = generate_report_excel(TEMPLATE_FILE, date_info, dl_data, buy_data, tf_data)
             output_name = f"GA4_Report_{date_info['file_tag']}.xlsx"
-            st.download_button(
+            top_c3.download_button(
                 label=f"📥 导出并下载标准化报表 ({output_name})",
                 data=excel_bytes,
                 file_name=output_name,
@@ -341,10 +334,86 @@ if uploaded_files:
 
         st.markdown("---")
 
-        # 看板 Tab 切换
+        # ================= 核心概览指标卡（新增） =================
+        st.subheader("📌 核心指标概览看板")
+
+        # 计算概览指标数据
+        # 1. 自然+引荐
+        nat_cur = (tf_data["cur"].get("Organic Search", 0) + tf_data["cur"].get("Referral", 0)) if tf_data else 0
+        nat_prev = (tf_data["prev"].get("Organic Search", 0) + tf_data["prev"].get("Referral", 0)) if tf_data else 0
+        # 2. 下载量
+        dl_cur_total = sum(v["cur"] for v in dl_data.values())
+        dl_prev_total = sum(v["prev"] for v in dl_data.values())
+        # 3. 购买事件数
+        buy_cur_total = sum(sum(prod["cur"] for prod in p_dict.values()) for p_dict in buy_data.values())
+        buy_prev_total = sum(sum(prod["prev"] for prod in p_dict.values()) for p_dict in buy_data.values())
+        # 4. 下载转化率
+        dl_c_rate = (dl_cur_total / nat_cur) if nat_cur > 0 else 0.0
+        dl_p_rate = (dl_prev_total / nat_prev) if nat_prev > 0 else 0.0
+        # 5. 购买转化率
+        buy_c_rate = (buy_cur_total / dl_cur_total) if dl_cur_total > 0 else 0.0
+        buy_p_rate = (buy_prev_total / dl_prev_total) if dl_prev_total > 0 else 0.0
+
+        def calc_ratio(c, p):
+            if p == 0: return 0.0
+            return (c - p) / p
+
+        def get_status(diff):
+            if abs(diff) < 0.01: return "正常"
+            return "上涨" if diff > 0 else "下降"
+
+        overview_rows = [
+            {
+                "指标": "自然+引荐流量",
+                f"{date_info['cur_label']}": f"{nat_cur:,}",
+                f"{date_info['prev_label']}": f"{nat_prev:,}",
+                "环比": f"{calc_ratio(nat_cur, nat_prev)*100:+.2f}%",
+                "状态": get_status(calc_ratio(nat_cur, nat_prev))
+            },
+            {
+                "指标": "下载量",
+                f"{date_info['cur_label']}": f"{dl_cur_total:,}",
+                f"{date_info['prev_label']}": f"{dl_prev_total:,}",
+                "环比": f"{calc_ratio(dl_cur_total, dl_prev_total)*100:+.2f}%",
+                "状态": get_status(calc_ratio(dl_cur_total, dl_prev_total))
+            },
+            {
+                "指标": "购买事件数",
+                f"{date_info['cur_label']}": f"{buy_cur_total:,}",
+                f"{date_info['prev_label']}": f"{buy_prev_total:,}",
+                "环比": f"{calc_ratio(buy_cur_total, buy_prev_total)*100:+.2f}%",
+                "状态": get_status(calc_ratio(buy_cur_total, buy_prev_total))
+            },
+            {
+                "指标": "下载转化率",
+                f"{date_info['cur_label']}": f"{dl_c_rate*100:.2f}%",
+                f"{date_info['prev_label']}": f"{dl_p_rate*100:.2f}%",
+                "环比": f"{(dl_c_rate - dl_p_rate)*100:+.2f}%",
+                "状态": get_status(dl_c_rate - dl_p_rate)
+            },
+            {
+                "指标": "购买转化率",
+                f"{date_info['cur_label']}": f"{buy_c_rate*100:.2f}%",
+                f"{date_info['prev_label']}": f"{buy_p_rate*100:.2f}%",
+                "环比": f"{(buy_c_rate - buy_p_rate)*100:+.2f}%",
+                "状态": get_status(buy_c_rate - buy_p_rate)
+            }
+        ]
+        overview_df = pd.DataFrame(overview_rows)
+
+        # 站点与日均指标卡横幅展示
+        site_col1, site_col2 = st.columns(2)
+        site_col1.info(f"🌐 **负责站点**：`{site_name}`")
+        site_col2.warning(f"⚡ **{ip_label}**：`{daily_ip:,}`")
+
+        # 渲染样式化概览表格
+        st.dataframe(overview_df, use_container_width=True, hide_index=True)
+        st.markdown("---")
+
+        # ================= 业务明细 Tab 看板 =================
         tab1, tab2, tab3 = st.tabs(["📥 客户端下载量看板", "💰 购买量看板", "🌐 渠道流量看板"])
 
-        # --- Tab 1: 下载量 ---
+        # Tab 1: 下载量
         with tab1:
             dl_df = pd.DataFrame([
                 {"产品包": k, f"本期 ({date_info['cur_label']})": v["cur"], f"上期 ({date_info['prev_label']})": v["prev"]}
@@ -354,29 +423,19 @@ if uploaded_files:
             dl_df["环比变动"] = dl_df.apply(lambda r: f"{(r['差额'] / r.iloc[2] * 100):.2f}%" if r.iloc[2] != 0 else "-", axis=1)
 
             chart_type = st.radio("展现方式：", ["柱状对比图", "折线走势图", "纯数据表格"], horizontal=True, key="dl_view")
-
             if chart_type == "柱状对比图":
-                fig = px.bar(
-                    dl_df, x="产品包", y=[dl_df.columns[1], dl_df.columns[2]],
-                    barmode="group", title="各客户端下载量对比",
-                    color_discrete_sequence=["#1976D2", "#90CAF9"]
-                )
+                fig = px.bar(dl_df, x="产品包", y=[dl_df.columns[1], dl_df.columns[2]], barmode="group", title="各客户端下载量对比", color_discrete_sequence=["#1976D2", "#90CAF9"])
                 st.plotly_chart(fig, use_container_width=True)
             elif chart_type == "折线走势图":
-                fig = px.line(
-                    dl_df, x="产品包", y=[dl_df.columns[1], dl_df.columns[2]],
-                    markers=True, title="各客户端下载量走势对比",
-                    color_discrete_sequence=["#1976D2", "#FFA726"]
-                )
+                fig = px.line(dl_df, x="产品包", y=[dl_df.columns[1], dl_df.columns[2]], markers=True, title="各客户端下载量走势对比", color_discrete_sequence=["#1976D2", "#FFA726"])
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.dataframe(dl_df, use_container_width=True)
 
-        # --- Tab 2: 购买量 ---
+        # Tab 2: 购买量
         with tab2:
             plan_choice = st.selectbox("选择套餐周期：", ["Lifetime", "12M", "3M", "1M"])
             target_plan_data = buy_data.get(plan_choice.lower() if plan_choice != "12M" else "12M", {})
-
             buy_df = pd.DataFrame([
                 {"产品类型": k, f"本期 ({date_info['cur_label']})": v["cur"], f"上期 ({date_info['prev_label']})": v["prev"]}
                 for k, v in target_plan_data.items()
@@ -387,25 +446,17 @@ if uploaded_files:
 
                 buy_chart_type = st.radio("展现方式：", ["柱状对比图", "折线走势图", "纯数据表格"], horizontal=True, key="buy_view")
                 if buy_chart_type == "柱状对比图":
-                    fig = px.bar(
-                        buy_df, x="产品类型", y=[buy_df.columns[1], buy_df.columns[2]],
-                        barmode="group", title=f"{plan_choice} 购买转化量对比",
-                        color_discrete_sequence=["#4CAF50", "#A5D6A7"]
-                    )
+                    fig = px.bar(buy_df, x="产品类型", y=[buy_df.columns[1], buy_df.columns[2]], barmode="group", title=f"{plan_choice} 购买转化量对比", color_discrete_sequence=["#4CAF50", "#A5D6A7"])
                     st.plotly_chart(fig, use_container_width=True)
                 elif buy_chart_type == "折线走势图":
-                    fig = px.line(
-                        buy_df, x="产品类型", y=[buy_df.columns[1], buy_df.columns[2]],
-                        markers=True, title=f"{plan_choice} 购买转化量对比",
-                        color_discrete_sequence=["#4CAF50", "#FFB74D"]
-                    )
+                    fig = px.line(buy_df, x="产品类型", y=[buy_df.columns[1], buy_df.columns[2]], markers=True, title=f"{plan_choice} 购买转化量对比", color_discrete_sequence=["#4CAF50", "#FFB74D"])
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.dataframe(buy_df, use_container_width=True)
             else:
                 st.info(f"暂无 {plan_choice} 维度的购买数据")
 
-        # --- Tab 3: 渠道流量 ---
+        # Tab 3: 渠道流量
         with tab3:
             if tf_data:
                 channels = list(set(list(tf_data["cur"].keys()) + list(tf_data["prev"].keys())))
@@ -418,18 +469,10 @@ if uploaded_files:
 
                 tf_chart_type = st.radio("展现方式：", ["柱状对比图", "折线走势图", "纯数据表格"], horizontal=True, key="tf_view")
                 if tf_chart_type == "柱状对比图":
-                    fig = px.bar(
-                        tf_df, x="渠道", y=[tf_df.columns[1], tf_df.columns[2]],
-                        barmode="group", title="各渠道用户获取量对比",
-                        color_discrete_sequence=["#9C27B0", "#CE93D8"]
-                    )
+                    fig = px.bar(tf_df, x="渠道", y=[tf_df.columns[1], tf_df.columns[2]], barmode="group", title="各渠道用户获取量对比", color_discrete_sequence=["#9C27B0", "#CE93D8"])
                     st.plotly_chart(fig, use_container_width=True)
                 elif tf_chart_type == "折线走势图":
-                    fig = px.line(
-                        tf_df, x="渠道", y=[tf_df.columns[1], tf_df.columns[2]],
-                        markers=True, title="各渠道用户获取量对比",
-                        color_discrete_sequence=["#9C27B0", "#FF7043"]
-                    )
+                    fig = px.line(tf_df, x="渠道", y=[tf_df.columns[1], tf_df.columns[2]], markers=True, title="各渠道用户获取量对比", color_discrete_sequence=["#9C27B0", "#FF7043"])
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.dataframe(tf_df, use_container_width=True)
