@@ -236,6 +236,37 @@ def parse_traffic_csv_content(text):
                 traffic[current_period][channel] = users
     return traffic
 
+def parse_seo_pages_csv_content(text):
+    """解析《网页和屏幕_网页路径和屏幕类.csv》，提取SEO唯一PV（活跃用户数）"""
+    lines = text.splitlines()
+    pages_data = {"cur": {}, "prev": {}}
+    current_period = None
+
+    for line in lines:
+        line_str = line.strip()
+        if not line_str: continue
+
+        if line_str.startswith("# 开始日期："):
+            if current_period is None: current_period = "cur"
+            elif current_period == "cur": current_period = "prev"
+            continue
+
+        if line_str.startswith('#') or "网页路径和屏幕类" in line_str:
+            continue
+
+        if current_period in ["cur", "prev"]:
+            cols = [c.strip() for c in line_str.split(',')]
+            if cols and cols[0]:
+                path = cols[0]
+                # 活跃用户在第 3 列（索引 2）
+                try:
+                    unique_pv = int(cols[2].replace(',', ''))
+                except (ValueError, IndexError):
+                    unique_pv = 0
+                pages_data[current_period][path] = unique_pv
+
+    return pages_data
+
 def generate_report_excel(template_path, date_info, dl_data, dl_ga4_totals, buy_data, buy_ga4_totals, tf_data):
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_name = tmp.name
@@ -244,12 +275,10 @@ def generate_report_excel(template_path, date_info, dl_data, dl_ga4_totals, buy_
     wb = openpyxl.load_workbook(tmp_name)
     ws = wb.active
 
-    # 1. 周期标签
     for r in [2, 8, 14, 20, 26]:
         ws.cell(r, 1, date_info["cur_label"])
         ws.cell(r + 1, 1, date_info["prev_label"])
 
-    # 2. 填充下载量（各单品分别填入，最后一列保留 SUM 算术求和）
     for c in range(2, 18):
         h = ws.cell(1, c).value
         if h:
@@ -257,11 +286,9 @@ def generate_report_excel(template_path, date_info, dl_data, dl_ga4_totals, buy_
             match = next((v for k, v in dl_data.items() if " ".join(k.split()) == hc), None)
             ws.cell(2, c, match["cur"] if match else 0)
             ws.cell(3, c, match["prev"] if match else 0)
-    # 单品总计公式
     ws.cell(2, 18, "=SUM(B2:Q2)")
     ws.cell(3, 18, "=SUM(B3:Q3)")
 
-    # 3. 填充购买量（各单品分别填入，最后一列保留 SUM 算术求和）
     for plan_key, head_r, cur_r, prev_r in [("lifetime", 7, 8, 9), ("12M", 13, 14, 15), ("3M", 19, 20, 21), ("1M", 25, 26, 27)]:
         cur_plan = buy_data.get(plan_key, {})
         for c in range(2, 16):
@@ -274,7 +301,6 @@ def generate_report_excel(template_path, date_info, dl_data, dl_ga4_totals, buy_
         ws.cell(cur_r, 16, f"=SUM(B{cur_r}:O{cur_r})")
         ws.cell(prev_r, 16, f"=SUM(B{prev_r}:O{prev_r})")
 
-    # 4. 流量与公式 (Row 31~39)
     if tf_data:
         days = date_info["days"]
         div = days if date_info["type"] == "month" else 7
@@ -301,57 +327,47 @@ def generate_report_excel(template_path, date_info, dl_data, dl_ga4_totals, buy_
         ws.cell(32, 10, "=B32/30")
         ws.cell(32, 11, "=C32/30")
 
-    # 5. 填入核心概览汇总表格 (Row 41~46)
-    # 取 GA4 官方去重后的下载与购买总数
     dl_c_tot = dl_ga4_totals["cur"] if dl_ga4_totals["cur"] > 0 else sum(v["cur"] for v in dl_data.values())
     dl_p_tot = dl_ga4_totals["prev"] if dl_ga4_totals["prev"] > 0 else sum(v["prev"] for v in dl_data.values())
-
     buy_c_tot = buy_ga4_totals["cur"] if buy_ga4_totals["cur"] > 0 else sum(sum(prod["cur"] for prod in p.values()) for p in buy_data.values())
     buy_p_tot = buy_ga4_totals["prev"] if buy_ga4_totals["prev"] > 0 else sum(sum(prod["prev"] for prod in p.values()) for p in buy_data.values())
 
-    # 表头行 41
     ws.cell(41, 1, "指标")
     ws.cell(41, 2, date_info["cur_label"])
     ws.cell(41, 3, date_info["prev_label"])
     ws.cell(41, 4, "环比")
     ws.cell(41, 5, "状态")
 
-    # 42行: 自然+引荐
     ws.cell(42, 1, "自然+引荐")
     ws.cell(42, 2, "=G32")
     ws.cell(42, 3, "=H32")
     ws.cell(42, 4, "=IF(C42=0, 0, (B42-C42)/C42)")
     ws.cell(42, 5, '=IF(D42>0.005, "上涨", IF(D42<-0.005, "下降", "正常"))')
 
-    # 43行: 下载量 (GA4官方去重总量)
     ws.cell(43, 1, "下载量")
     ws.cell(43, 2, dl_c_tot)
     ws.cell(43, 3, dl_p_tot)
     ws.cell(43, 4, "=IF(C43=0, 0, (B43-C43)/C43)")
     ws.cell(43, 5, '=IF(D43>0.005, "上涨", IF(D43<-0.005, "下降", "正常"))')
 
-    # 44行: 购买事件数 (GA4官方去重总量)
     ws.cell(44, 1, "购买事件数")
     ws.cell(44, 2, buy_c_tot)
     ws.cell(44, 3, buy_p_tot)
     ws.cell(44, 4, "=IF(C44=0, 0, (B44-C44)/C44)")
     ws.cell(44, 5, '=IF(D44>0.005, "上涨", IF(D44<-0.005, "下降", "正常"))')
 
-    # 45行: 下载转化率
     ws.cell(45, 1, "下载转化率")
     ws.cell(45, 2, "=IF(B42=0, 0, B43/B42)")
     ws.cell(45, 3, "=IF(C42=0, 0, C43/C42)")
     ws.cell(45, 4, "=B45-C45")
     ws.cell(45, 5, '=IF(D45>0.0005, "上涨", IF(D45<-0.0005, "下降", "正常"))')
 
-    # 46行: 购买转化率
     ws.cell(46, 1, "购买转化率")
     ws.cell(46, 2, "=IF(B43=0, 0, B44/B43)")
     ws.cell(46, 3, "=IF(C43=0, 0, C44/C43)")
     ws.cell(46, 4, "=B46-C46")
     ws.cell(46, 5, '=IF(D46>0.0005, "上涨", IF(D46<-0.0005, "下降", "正常"))')
 
-    # 设置百分比格式
     for r in [42, 43, 44]:
         ws.cell(r, 4).number_format = '0.00%'
     for r in [45, 46]:
@@ -384,13 +400,18 @@ with st.sidebar:
         st.error("❌ 网站目录下未检测到 `template.xlsx`")
 
 if uploaded_files:
-    dl_text, buy_text, tf_text = None, None, None
+    dl_text, buy_text, tf_text, seo_text = None, None, None, None
     for f in uploaded_files:
         name = f.name.lower()
         content = f.getvalue().decode('utf-8', errors='ignore')
-        if "download" in name: dl_text = content
-        elif "buy" in name: buy_text = content
-        elif "用户获取" in name or "渠道" in name: tf_text = content
+        if "download" in name:
+            dl_text = content
+        elif "buy" in name:
+            buy_text = content
+        elif "用户获取" in name or "渠道" in name:
+            tf_text = content
+        elif "网页和屏幕" in name or "网页路径" in name:
+            seo_text = content
 
     if not dl_text or not buy_text:
         st.warning("请确保上传的文件中包含 `download.csv` 和 `buy.csv`！")
@@ -399,6 +420,7 @@ if uploaded_files:
         dl_data, dl_ga4_totals = parse_download_csv_content(dl_text)
         buy_data, buy_ga4_totals = parse_buy_csv_content(buy_text)
         tf_data = parse_traffic_csv_content(tf_text) if tf_text else None
+        seo_data = parse_seo_pages_csv_content(seo_text) if seo_text else None
 
         site_name = parse_site_name_from_traffic(tf_text) if tf_text else "Sidify.de"
         total_traffic_cur = sum(tf_data["cur"].values()) if tf_data else 0
@@ -495,7 +517,12 @@ if uploaded_files:
         st.markdown("---")
 
         # ================= 业务明细 Tab 看板 =================
-        tab1, tab2, tab3 = st.tabs(["📥 客户端下载量看板", "💰 购买量看板", "🌐 渠道流量看板"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📥 客户端下载量看板",
+            "💰 购买量看板",
+            "🌐 渠道流量看板",
+            "🔍 SEO 唯一PV (活跃用户) 分析"
+        ])
 
         with tab1:
             dl_df = pd.DataFrame([
@@ -559,5 +586,62 @@ if uploaded_files:
                     st.dataframe(tf_df, use_container_width=True)
             else:
                 st.info("未检测到《用户获取情况》CSV 文件，暂不展示渠道数据。")
+
+        # ================= Tab 4: SEO 唯一PV 分析 =================
+        with tab4:
+            if seo_data:
+                all_paths = list(set(list(seo_data["cur"].keys()) + list(seo_data["prev"].keys())))
+                
+                # 构建数据表并按本期唯一PV倒序排列
+                seo_list = [
+                    {
+                        "网页路径": p,
+                        f"本期唯一PV ({date_info['cur_label']})": seo_data["cur"].get(p, 0),
+                        f"上期唯一PV ({date_info['prev_label']})": seo_data["prev"].get(p, 0)
+                    }
+                    for p in all_paths
+                ]
+                seo_df = pd.DataFrame(seo_list)
+                cur_col_name = f"本期唯一PV ({date_info['cur_label']})"
+                prev_col_name = f"上期唯一PV ({date_info['prev_label']})"
+                
+                seo_df = seo_df.sort_values(by=cur_col_name, ascending=False).reset_index(drop=True)
+                seo_df["差额"] = seo_df[cur_col_name] - seo_df[prev_col_name]
+                seo_df["环比变动"] = seo_df.apply(lambda r: f"{(r['差额'] / r[prev_col_name] * 100):.2f}%" if r[prev_col_name] != 0 else "-", axis=1)
+
+                # 顶部控制栏：选择展示范围与展现方式
+                ctrl_col1, ctrl_col2 = st.columns([1, 2])
+                top_n = ctrl_col1.selectbox("筛选排名范围：", ["TOP 10 页面", "TOP 20 页面", "TOP 50 页面", "全部页面"], index=0)
+                seo_view_type = ctrl_col2.radio("展现方式：", ["柱状对比图", "折线走势图", "完整明细数据表"], horizontal=True, key="seo_view")
+
+                limit_map = {"TOP 10 页面": 10, "TOP 20 页面": 20, "TOP 50 页面": 50, "全部页面": len(seo_df)}
+                display_df = seo_df.head(limit_map[top_n])
+
+                if seo_view_type == "柱状对比图":
+                    fig = px.bar(
+                        display_df,
+                        x="网页路径",
+                        y=[cur_col_name, prev_col_name],
+                        barmode="group",
+                        title=f"SEO 页面唯一PV (活跃用户) - {top_n} 对比",
+                        color_discrete_sequence=["#00897B", "#80CBC4"]
+                    )
+                    fig.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(fig, use_container_width=True)
+                elif seo_view_type == "折线走势图":
+                    fig = px.line(
+                        display_df,
+                        x="网页路径",
+                        y=[cur_col_name, prev_col_name],
+                        markers=True,
+                        title=f"SEO 页面唯一PV (活跃用户) - {top_n} 走势对比",
+                        color_discrete_sequence=["#00897B", "#FF7043"]
+                    )
+                    fig.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.dataframe(display_df, use_container_width=True)
+            else:
+                st.info("未检测到《网页和屏幕_网页路径和屏幕类.csv》文件，请在左侧侧边栏上传后查看。")
 else:
     st.info("👈 请在左侧侧边栏上传你的 CSV 文件以启动数据看板。")
