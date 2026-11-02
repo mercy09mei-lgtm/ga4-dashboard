@@ -31,7 +31,7 @@ SIDIFY_PRODUCT_MAP = {
     "deezer": "Deezer", "dz": "Deezer",
 }
 
-# ================= 2. NoteBurner 规则配置（示例模板，可按需添加） =================
+# ================= 2. NoteBurner 规则配置 =================
 NOTEBURNER_DOWNLOAD_RULES = [
     (r"noteburner-spotify-music-converter(-arm)?\.exe", "spotify win"),
     (r"noteburner-spotify-music-converter(-arm)?\.dmg", "spotify mac"),
@@ -55,7 +55,6 @@ PLAN_CHOICES = {"Lifetime": "lifetime", "12M": "12M", "3M": "3M", "1M": "1M"}
 
 
 def get_rules_for_site(site_domain: str):
-    """根据站点域名获取对应的映射规则。默认 fallback 为 Sidify。"""
     domain = site_domain.lower() if site_domain else ""
     if "noteburner" in domain:
         return {
@@ -63,7 +62,6 @@ def get_rules_for_site(site_domain: str):
             "product_map": NOTEBURNER_PRODUCT_MAP,
             "plan_map": PLAN_MAP,
         }
-    # 默认返回 Sidify 规则
     return {
         "download_rules": SIDIFY_DOWNLOAD_RULES,
         "product_map": SIDIFY_PRODUCT_MAP,
