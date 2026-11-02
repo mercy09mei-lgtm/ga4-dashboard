@@ -23,9 +23,9 @@ SLOTS = [
 # ================= 样式 =================
 st.markdown(f"""
 <style>
-.block-container {{ padding-top: 2rem; max-width: 1200px; }}
+.block-container {{ padding-top: 4.5rem; max-width: 1200px; }}
 h1, h2, h3 {{ font-weight: 600; letter-spacing: -0.01em; }}
-.page-title {{ font-size: 1.35rem; font-weight: 600; margin: 0; }}
+.page-title {{ font-size: 1.35rem; font-weight: 600; line-height: 1.5; margin: 0; padding: 0; }}
 .page-sub {{ color: rgba(128,128,128,.95); font-size: .85rem; margin-top: 2px; }}
 .pill {{ display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: .8rem; margin-right: 8px; }}
 .pill.blue {{ background: rgba(56,139,253,.12); color: #3B82F6; }}
@@ -67,9 +67,9 @@ def show_chart(fig):
 
 def style_fig(fig, title):
     fig.update_layout(
-        title=dict(text=title, font=dict(size=14)),
-        template="plotly_white", margin=dict(l=10, r=10, t=48, b=10),
-        legend=dict(orientation="h", y=1.12, x=0, title=None),
+        title=dict(text=title, font=dict(size=14), x=0, xanchor="left", y=0.97, yanchor="top"),
+        template="plotly_white", margin=dict(l=10, r=10, t=90, b=10),
+        legend=dict(orientation="h", x=0, xanchor="left", y=1.02, yanchor="bottom", title=None),
         xaxis_title=None, yaxis_title=None,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
