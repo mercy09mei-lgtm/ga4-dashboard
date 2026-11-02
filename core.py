@@ -14,7 +14,7 @@ UNKNOWN_DATE = {
 }
 
 EXPORT_SEO_TOP = 50
-SLOT_KEYS = ("traffic", "download", "buy", "seo", "seo_click")
+SLOT_KEYS = ("traffic", "download", "buy", "seo", "seo_click", "seo_buy")
 
 
 # ================= 日期与站点 =================
@@ -53,35 +53,30 @@ def _build_date_info(c_start, c_end, p_start, p_end):
         detail_lbl = f"本期 {cur_lbl} ({cur_days}天) vs 上期 {prev_lbl} ({prev_days}天)"
 
         return {
-            "type": "custom",
-            "cur_days": cur_days,
-            "prev_days": prev_days,
-            "file_tag": f"{c_start}_{c_end}",
-            "cur_label": cur_lbl,
-            "prev_label": prev_lbl,
-            "detail_label": detail_lbl,
+            "type": "custom", "cur_days": cur_days, "prev_days": prev_days,
+            "file_tag": f"{c_start}_{c_end}", "cur_label": cur_lbl,
+            "prev_label": prev_lbl, "detail_label": detail_lbl,
         }
     except Exception:
         return dict(UNKNOWN_DATE)
 
 
 def parse_site_domain(text):
-    if not text:
-        return "sidify.de"
+    if not text: return "sidify.de"
     for line in text.splitlines()[:15]:
         match = re.search(r'https?://(?:www\.)?([^/\s\-]+(?:\.[a-z]+)+)', line)
-        if match:
-            return match.group(1).lower()
+        if match: return match.group(1).lower()
     return "sidify.de"
 
 
+# ================= 文件自动探测 =================
 def detect_file_type(content: str, filename: str = ""):
     head = "\n".join(content.splitlines()[:20])
     fn = filename.lower()
     if "seo转化计算-下载" in head or "seo-download" in fn:
         return "seo_click", "下载点击"
     if "seo转化计算-buy" in head or ("seo" in fn and "buy" in fn):
-        return "buy", "购买量"
+        return "seo_buy", "SEO购买点击"
     if "带来用户首次互动的主渠道组" in head or "用户获取" in head or "traffic" in fn:
         return "traffic", "用户获取"
     if "网页路径和屏幕类" in head or "网页和屏幕" in head:
@@ -102,10 +97,9 @@ def safe_parse_val(raw_str):
         return 0.0
 
 
-# ================= CSV 解析函数（单文件全面兼容） =================
+# ================= CSV 解析函数 =================
 def parse_download_csv_content(text, rule_bundle):
-    if not text:
-        return None, None
+    if not text: return None, None
     download_rules = rule_bundle["download_rules"]
     rows = list(csv.reader(text.splitlines()))
     desktop_idx, mobile_idx, tablet_idx, totals_idx = 2, 3, None, -1
@@ -129,19 +123,11 @@ def parse_download_csv_content(text, rule_bundle):
         if first_col.startswith('http') or any(first_col.endswith(ext) for ext in ['.exe', '.dmg', '.apk']):
             current_key = first_col
 
-        # 动态探测日期列（兼容普通 download.csv 与带网页位置的 csv）
-        date_col_idx = None
-        for idx in range(min(4, len(row))):
-            if " - " in row[idx] and "变动百分比" not in row[idx]:
-                date_col_idx = idx
-                break
-
+        date_col_idx = next((i for i in range(min(4, len(row))) if " - " in row[i] and "变动百分比" not in row[i]), None)
         if date_col_idx is not None:
             label = row[date_col_idx].strip()
-            if not cur_period_label:
-                cur_period_label = label
-            elif not prev_period_label and label != cur_period_label:
-                prev_period_label = label
+            if not cur_period_label: cur_period_label = label
+            elif not prev_period_label and label != cur_period_label: prev_period_label = label
 
             if not current_key and first_col == "":
                 tot_val = safe_parse_val(row[totals_idx]) if len(row) > abs(totals_idx) else 0.0
@@ -167,9 +153,8 @@ def parse_download_csv_content(text, rule_bundle):
 
 
 def parse_buy_csv_content(text, rule_bundle):
-    """支持 buy.csv 和 SEO-buy.csv 解析"""
-    if not text:
-        return None, None
+    """解析真正的订单结算表 buy.csv"""
+    if not text: return None, None
     prod_map = rule_bundle["product_map"]
     plan_map = rule_bundle["plan_map"]
     rows = list(csv.reader(text.splitlines()))
@@ -181,51 +166,28 @@ def parse_buy_csv_content(text, rule_bundle):
     for row in rows:
         if not row: continue
         first_col = row[0].strip()
-        if first_col.startswith("buy_") or "buynow" in first_col:
+        if first_col.startswith("buy_"):
             current_key = first_col
 
-        date_col_idx = None
-        for idx in range(min(4, len(row))):
-            if " - " in row[idx] and "变动百分比" not in row[idx]:
-                date_col_idx = idx
-                break
-
+        date_col_idx = next((i for i in range(min(4, len(row))) if " - " in row[i] and "变动百分比" not in row[i]), None)
         if date_col_idx is not None:
             label = row[date_col_idx].strip()
-            # 活跃用户值通常跟在日期列之后
             val = safe_parse_val(row[date_col_idx + 1]) if len(row) > date_col_idx + 1 else 0.0
-
-            if not cur_period_label:
-                cur_period_label = label
-            elif not prev_period_label and label != cur_period_label:
-                prev_period_label = label
+            if not cur_period_label: cur_period_label = label
+            elif not prev_period_label and label != cur_period_label: prev_period_label = label
 
             if not current_key and first_col == "":
-                ga4_totals["cur" if label == cur_period_label else "prev"] += int(val)
-
+                ga4_totals["cur" if label == cur_period_label else "prev"] = int(val)
             if current_key:
-                # 解析 URL 或 buy_ 事件名称
-                if "buynow" in current_key:
-                    # 从 URL 提取产品与系统: 如 /spotify-windows/buynow.html
-                    matched_prod = "spotify"
-                    matched_os = "win" if "windows" in current_key else ("mac" if "mac" in current_key else "android")
-                    for p_k in prod_map:
-                        if p_k in current_key.lower():
-                            matched_prod = prod_map[p_k]
-                            break
-                    target_col = f"{matched_prod} {matched_os}"
-                    norm_plan = "lifetime"
+                parts = current_key.split('_')
+                if len(parts) >= 3:
+                    raw_prod = parts[1].lower()
+                    raw_os = parts[2].lower() if len(parts) >= 4 and parts[2].lower() in ["win", "mac", "android"] else "win"
+                    raw_plan = "_".join(parts[3:] if raw_os != "win" else parts[2:]).lower()
                 else:
-                    parts = current_key.split('_')
-                    if len(parts) >= 3:
-                        raw_prod = parts[1].lower()
-                        raw_os = parts[2].lower() if len(parts) >= 4 and parts[2].lower() in ["win", "mac", "android"] else "win"
-                        raw_plan = "_".join(parts[3:] if raw_os != "win" else parts[2:]).lower()
-                    else:
-                        raw_prod, raw_os, raw_plan = "spotify", "win", "lifetime"
-                    target_col = f"{prod_map.get(raw_prod, raw_prod)} {raw_os}"
-                    norm_plan = plan_map.get(raw_plan, "lifetime")
-
+                    raw_prod, raw_os, raw_plan = "spotify", "win", "lifetime"
+                target_col = f"{prod_map.get(raw_prod, raw_prod)} {raw_os}"
+                norm_plan = plan_map.get(raw_plan, "lifetime")
                 if norm_plan in data:
                     if target_col not in data[norm_plan]:
                         data[norm_plan][target_col] = {"cur": 0, "prev": 0}
@@ -234,8 +196,7 @@ def parse_buy_csv_content(text, rule_bundle):
 
 
 def parse_traffic_csv_content(text):
-    if not text:
-        return None
+    if not text: return None
     traffic = {"cur": {}, "prev": {}}
     current_period = None
     for line in text.splitlines():
@@ -254,8 +215,7 @@ def parse_traffic_csv_content(text):
 
 
 def parse_seo_pages_csv_content(text):
-    if not text:
-        return None
+    if not text: return None
     pages_data = {"cur": {}, "prev": {}}
     current_period = None
     for line in text.splitlines():
@@ -273,39 +233,88 @@ def parse_seo_pages_csv_content(text):
     return pages_data
 
 
-def parse_seo_download_clicks_csv(text):
-    if not text:
-        return None, None
+def parse_seo_download_clicks_csv(text, rule_bundle):
+    """解析 seo-download.csv，提取按 URL 路径与按产品维度的下载点击"""
+    if not text: return None, None, None
+    download_rules = rule_bundle["download_rules"]
     rows = list(csv.reader(text.splitlines()))
     cur_period_label, prev_period_label = None, None
-    current_path = None
+    current_path, current_file = None, None
     clicks_data = {"cur": {}, "prev": {}}
+    prod_clicks = {"cur": {}, "prev": {}}
     total_clicks = {"cur": 0, "prev": 0}
 
     for row in rows:
         if not row: continue
+        if len(row) > 1 and row[0].startswith("http"):
+            current_file = row[0].strip()
         if len(row) > 1 and row[1].startswith("http"):
             current_path = urlparse(row[1].strip()).path
 
-        date_col_idx = None
-        for idx in range(min(4, len(row))):
-            if " - " in row[idx] and "变动百分比" not in row[idx]:
-                date_col_idx = idx
-                break
-
+        date_col_idx = next((i for i in range(min(4, len(row))) if " - " in row[i] and "变动百分比" not in row[i]), None)
         if date_col_idx is not None:
             label = row[date_col_idx].strip()
-            if not cur_period_label:
-                cur_period_label = label
-            elif not prev_period_label and label != cur_period_label:
-                prev_period_label = label
+            if not cur_period_label: cur_period_label = label
+            elif not prev_period_label and label != cur_period_label: prev_period_label = label
             p_key = "cur" if label == cur_period_label else "prev"
             val = int(safe_parse_val(row[-1])) if len(row) > 0 else 0
+
             if not current_path and row[0].strip() == "":
                 total_clicks[p_key] = val
             elif current_path:
                 clicks_data[p_key][current_path] = clicks_data[p_key].get(current_path, 0) + val
-    return clicks_data, total_clicks
+                # 产品线聚合
+                target_prod = "Other"
+                if current_file:
+                    for pat, prod_name in download_rules:
+                        if re.search(pat, current_file, re.IGNORECASE):
+                            target_prod = prod_name
+                            break
+                prod_clicks[p_key][target_prod] = prod_clicks[p_key].get(target_prod, 0) + val
+
+    return clicks_data, prod_clicks, total_clicks
+
+
+def parse_seo_buy_clicks_csv(text, rule_bundle):
+    """解析 SEO-buy.csv，提取用户在 SEO 页面点击购买（click_buy）的数据"""
+    if not text: return None, None, None
+    seo_buy_rules = rule_bundle["seo_buy_rules"]
+    rows = list(csv.reader(text.splitlines()))
+    cur_period_label, prev_period_label = None, None
+    current_path, current_buynow = None, None
+    clicks_data = {"cur": {}, "prev": {}}
+    prod_clicks = {"cur": {}, "prev": {}}
+    total_clicks = {"cur": 0, "prev": 0}
+
+    for row in rows:
+        if not row: continue
+        if len(row) > 1 and row[0].startswith("http"):
+            current_buynow = row[0].strip()
+        if len(row) > 1 and row[1].startswith("http"):
+            current_path = urlparse(row[1].strip()).path
+
+        date_col_idx = next((i for i in range(min(4, len(row))) if " - " in row[i] and "变动百分比" not in row[i]), None)
+        if date_col_idx is not None:
+            label = row[date_col_idx].strip()
+            if not cur_period_label: cur_period_label = label
+            elif not prev_period_label and label != cur_period_label: prev_period_label = label
+            p_key = "cur" if label == cur_period_label else "prev"
+            val = int(safe_parse_val(row[date_col_idx + 1])) if len(row) > date_col_idx + 1 else 0
+
+            if not current_path and row[0].strip() == "":
+                total_clicks[p_key] = val
+            elif current_path:
+                clicks_data[p_key][current_path] = clicks_data[p_key].get(current_path, 0) + val
+                # 产品映射
+                target_prod = "Other Buynow"
+                if current_buynow:
+                    for pat, p_name in seo_buy_rules:
+                        if re.search(pat, current_buynow, re.IGNORECASE):
+                            target_prod = p_name
+                            break
+                prod_clicks[p_key][target_prod] = prod_clicks[p_key].get(target_prod, 0) + val
+
+    return clicks_data, prod_clicks, total_clicks
 
 
 # ================= 状态汇总 =================
@@ -332,7 +341,8 @@ def build_state(texts):
         "buy": None, "buy_tot": None,
         "tf": None,
         "seo": None,
-        "seo_click": None, "seo_click_tot": None,
+        "seo_click": None, "seo_prod_click": None, "seo_click_tot": None,
+        "seo_buy": None, "seo_buy_prod_click": None, "seo_buy_tot": None,
         "sources": [k for k in SLOT_KEYS if texts.get(k)],
     }
 
@@ -345,7 +355,9 @@ def build_state(texts):
     if texts.get("seo"):
         state["seo"] = parse_seo_pages_csv_content(texts["seo"])
     if texts.get("seo_click"):
-        state["seo_click"], state["seo_click_tot"] = parse_seo_download_clicks_csv(texts["seo_click"])
+        state["seo_click"], state["seo_prod_click"], state["seo_click_tot"] = parse_seo_download_clicks_csv(texts["seo_click"], rule_bundle)
+    if texts.get("seo_buy"):
+        state["seo_buy"], state["seo_buy_prod_click"], state["seo_buy_tot"] = parse_seo_buy_clicks_csv(texts["seo_buy"], rule_bundle)
 
     return state
 
@@ -354,7 +366,7 @@ def state_label(state):
     return state.get("date", {}).get("detail_label", "本期 vs 上期")
 
 
-# ================= 指标计算 =================
+# ================= KPI 计算 =================
 def dl_totals(state):
     if state.get("dl_tot") and state["dl_tot"].get("cur", 0) > 0:
         return state["dl_tot"]["cur"], state["dl_tot"]["prev"]
@@ -370,6 +382,9 @@ def buy_totals(state):
         cur = sum(p["cur"] for plan in state["buy"].values() for p in plan.values())
         prev = sum(p["prev"] for plan in state["buy"].values() for p in plan.values())
         return cur, prev
+    # 若无订单 buy.csv 但传了 SEO-buy.csv，以 SEO 购买点击作为参考
+    if state.get("seo_buy_tot") and state["seo_buy_tot"].get("cur", 0) > 0:
+        return state["seo_buy_tot"]["cur"], state["seo_buy_tot"]["prev"]
     return None
 
 
@@ -414,58 +429,104 @@ def compute_kpis(state):
     return kpis
 
 
-# ================= SEO 页面分析合并表 =================
-def seo_combined_df(state, include_keyword="", exclude_keyword="", view_mode="合并查看"):
+# ================= SEO 页面分析计算 =================
+def seo_combined_df(state, include_keyword="", exclude_keyword="", view_mode="合并看板"):
+    """
+    view_mode: "唯一 PV", "下载转化", "购买转化", "合并看板"
+    综合转化率 = (本期下载点击 + 本期购买点击) / 本期唯一 PV * 100%
+    """
     seo_pv = state.get("seo")
-    seo_click = state.get("seo_click")
-    if not seo_pv and not seo_click:
-        return pd.DataFrame(), 0, 0, 0, 0.0
+    seo_dl = state.get("seo_click")
+    seo_buy = state.get("seo_buy")
+    has_pv = seo_pv is not None and bool(seo_pv.get("cur"))
 
     all_paths = set()
-    if seo_pv:
-        all_paths.update(seo_pv["cur"].keys(), seo_pv["prev"].keys())
-    if seo_click:
-        all_paths.update(seo_click["cur"].keys(), seo_click["prev"].keys())
+    if seo_pv: all_paths.update(seo_pv["cur"].keys(), seo_pv["prev"].keys())
+    if seo_dl: all_paths.update(seo_dl["cur"].keys(), seo_dl["prev"].keys())
+    if seo_buy: all_paths.update(seo_buy["cur"].keys(), seo_buy["prev"].keys())
 
-    filtered_paths = []
-    for p in all_paths:
-        if include_keyword and include_keyword not in p:
-            continue
-        if exclude_keyword and exclude_keyword in p:
-            continue
-        filtered_paths.append(p)
+    filtered_paths = [
+        p for p in all_paths
+        if (not include_keyword or include_keyword in p) and (not exclude_keyword or exclude_keyword not in p)
+    ]
 
     rows = []
-    tot_pv_cur, tot_click_cur = 0, 0
+    tot_pv_c, tot_dl_c, tot_buy_c = 0, 0, 0
+
     for p in filtered_paths:
         pv_c = seo_pv["cur"].get(p, 0) if seo_pv else 0
         pv_p = seo_pv["prev"].get(p, 0) if seo_pv else 0
-        clk_c = seo_click["cur"].get(p, 0) if seo_click else 0
-        clk_p = seo_click["prev"].get(p, 0) if seo_click else 0
+        dl_c = seo_dl["cur"].get(p, 0) if seo_dl else 0
+        dl_p = seo_dl["prev"].get(p, 0) if seo_dl else 0
+        b_c = seo_buy["cur"].get(p, 0) if seo_buy else 0
+        b_p = seo_buy["prev"].get(p, 0) if seo_buy else 0
 
-        tot_pv_cur += pv_c
-        tot_click_cur += clk_c
+        tot_pv_c += pv_c
+        tot_dl_c += dl_c
+        tot_buy_c += b_c
 
         pv_change = f"{((pv_c - pv_p) / pv_p * 100):+.1f}%" if pv_p else "-"
-        clk_change = f"{((clk_c - clk_p) / clk_p * 100):+.1f}%" if clk_p else "-"
-        ctr = f"{(clk_c / pv_c * 100):.1f}%" if pv_c else "0.0%"
+        dl_change = f"{((dl_c - dl_p) / dl_p * 100):+.1f}%" if dl_p else "-"
+        b_change = f"{((b_c - b_p) / b_p * 100):+.1f}%" if b_p else "-"
+
+        dl_rate = f"{(dl_c / pv_c * 100):.1f}%" if pv_c else "-"
+        buy_rate = f"{(b_c / pv_c * 100):.1f}%" if pv_c else "-"
+        combo_rate = f"{((dl_c + b_c) / pv_c * 100):.1f}%" if pv_c else "-"
 
         row = {"网页路径": p}
-        if view_mode in ["仅唯一 PV", "合并查看"]:
+        if view_mode == "唯一 PV":
             row.update({"本期PV": pv_c, "上期PV": pv_p, "PV环比": pv_change})
-        if view_mode in ["仅下载点击", "合并查看"]:
-            row.update({"本期点击": clk_c, "上期点击": clk_p, "点击环比": clk_change})
-        if view_mode == "合并查看":
-            row["点击率"] = ctr
+        elif view_mode == "下载转化":
+            row.update({"本期下载点击": dl_c, "上期下载点击": dl_p, "下载环比": dl_change})
+            if has_pv: row["下载转化率"] = dl_rate
+        elif view_mode == "购买转化":
+            row.update({"本期购买点击": b_c, "上期购买点击": b_p, "购买环比": b_change})
+            if has_pv: row["购买转化率"] = buy_rate
+        else:  # 合并看板
+            row.update({
+                "本期PV": pv_c, "上期PV": pv_p, "PV环比": pv_change,
+                "本期下载": dl_c, "下载环比": dl_change,
+                "本期购买": b_c, "购买环比": b_change,
+            })
+            if has_pv:
+                row["下载转化率"] = dl_rate
+                row["购买转化率"] = buy_rate
+                row["综合转化率"] = combo_rate
         rows.append(row)
 
     df = pd.DataFrame(rows)
     if not df.empty:
-        sort_col = "本期PV" if "本期PV" in df.columns else "本期点击"
+        sort_col = "本期PV" if "本期PV" in df.columns and has_pv else ("本期下载" if "本期下载" in df.columns else ("本期下载点击" if "本期下载点击" in df.columns else df.columns[1]))
         df = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
 
-    avg_ctr = (tot_click_cur / tot_pv_cur * 100) if tot_pv_cur else 0.0
-    return df, len(filtered_paths), tot_pv_cur, tot_click_cur, avg_ctr
+    avg_ctr = ((tot_dl_c + tot_buy_c) / tot_pv_c * 100) if tot_pv_c else 0.0
+    return df, len(filtered_paths), tot_pv_c, tot_dl_c, tot_buy_c, avg_ctr, has_pv
+
+
+def seo_product_summary_df(state):
+    """产品线汇总分析（下载点击 + 购买点击按产品聚合）"""
+    dl_prods = state.get("seo_prod_click") or {"cur": {}, "prev": {}}
+    buy_prods = state.get("seo_buy_prod_click") or {"cur": {}, "prev": {}}
+
+    all_p = set(dl_prods.get("cur", {}).keys()) | set(dl_prods.get("prev", {}).keys()) | \
+            set(buy_prods.get("cur", {}).keys()) | set(buy_prods.get("prev", {}).keys())
+
+    rows = []
+    for p in sorted(all_p):
+        d_c = dl_prods.get("cur", {}).get(p, 0)
+        d_p = dl_prods.get("prev", {}).get(p, 0)
+        b_c = buy_prods.get("cur", {}).get(p, 0)
+        b_p = buy_prods.get("prev", {}).get(p, 0)
+        rows.append({
+            "产品名称": p,
+            "本期下载点击": d_c, "上期下载点击": d_p,
+            "本期购买点击": b_c, "上期购买点击": b_p,
+            "总意向点击": d_c + b_c
+        })
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("总意向点击", ascending=False).reset_index(drop=True)
+    return df
 
 
 def download_df(state):
@@ -503,7 +564,7 @@ def build_report(state):
     df_dl = download_df(state)
     df_buy = buy_df(state)
     df_tf = traffic_df(state)
-    df_seo, _, _, _, _ = seo_combined_df(state, view_mode="合并查看")
+    df_seo, _, _, _, _, _, _ = seo_combined_df(state, view_mode="合并看板")
 
     for title, df in [("客户端下载量", df_dl), ("购买量", df_buy), ("渠道流量", df_tf), ("SEO 页面分析", df_seo.head(EXPORT_SEO_TOP))]:
         if df is not None and not df.empty:
