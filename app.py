@@ -1,4 +1,4 @@
-"""GA4 看板 Web 界面：支持批量上传识别、SEO合并分析、快捷筛选与导出。"""
+"""GA4 看板 Web 界面：支持批量/单份上传识别、SEO合并分析、快捷筛选与导出。"""
 import hashlib
 from datetime import datetime
 import streamlit as st
@@ -10,14 +10,12 @@ ACCENT = "#E5484D"
 UP_COLOR = "#2E9E6B"
 MAX_HISTORY = 3
 
-# ================= 样式与设计图对齐 =================
 st.markdown(f"""
 <style>
 .block-container {{ padding-top: 2rem; max-width: 1250px; }}
 .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 500; }}
 .badge-green {{ background: #DCFCE7; color: #166534; }}
 .badge-gray {{ background: #F3F4F6; color: #4B5563; }}
-.stat-box {{ padding: 6px 12px; background: #F9FAFB; border-radius: 6px; font-size: 0.85rem; color: #374151; }}
 .kpi-card {{ border-radius: 8px; background: #FAFAFA; padding: 12px 18px; border: 1px solid #F0F0F0; }}
 .kpi-title {{ font-size: 0.85rem; color: #6B7280; }}
 .kpi-value {{ font-size: 1.6rem; font-weight: 700; line-height: 1.2; margin-top: 4px; }}
@@ -27,24 +25,22 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT} !important; 
 </style>
 """, unsafe_allow_html=True)
 
-# ================= Session 状态管理 =================
 st.session_state.setdefault("history", [])
 st.session_state.setdefault("view", "live")
-st.session_state.setdefault("uploaded_files_cache", {})
 st.session_state.setdefault("path_inc", "/guide/")
 st.session_state.setdefault("path_exc", "/de/")
 
-# ================= 侧边栏：批量拖拽上传与识别 =================
+# ================= 侧边栏：上传与历史记录 =================
 texts = {"traffic": None, "download": None, "buy": None, "seo": None, "seo_click": None}
 file_badges = []
 
 with st.sidebar:
-    st.markdown("### 数据上传（支持批量）")
+    st.markdown("### 数据上传（支持批量/单份）")
     uploaded_files = st.file_uploader(
         "一次拖入多个 CSV\n自动识别文件类型",
         type=["csv"],
         accept_multiple_files=True,
-        help="支持同时拖入用户获取、download、buy、网页和屏幕、seo-download点击CSV",
+        help="上传任意 1 个或多个 CSV 均可生成对应分析板块",
         key="batch_uploader"
     )
 
@@ -58,21 +54,19 @@ with st.sidebar:
             else:
                 file_badges.append((f.name, "未识别", "badge-gray"))
 
-        # 文件列表展示（还原设计图左侧样式）
         st.markdown("---")
         for fn, lbl, cls in file_badges:
             cols = st.columns([7, 3])
             cols[0].caption(fn[:16] + "..." if len(fn) > 16 else fn)
             cols[1].markdown(f'<span class="badge {cls}">{lbl}</span>', unsafe_allow_html=True)
 
-    # 历史记录展示
     st.markdown("---")
     st.markdown("##### 历史记录 (最多 3 条)")
     live_state = core.build_state(texts)
     live_sig = hashlib.md5("".join(texts[k] or "-" for k in core.SLOT_KEYS).encode("utf-8")).hexdigest()[:8] if live_state else None
 
     if live_state and st.session_state.view == "live":
-        if st.button("保存当前记录", key="btn_save"):
+        if st.button("保存当前分析到历史", key="btn_save"):
             if not any(h["id"] == live_sig for h in st.session_state.history):
                 st.session_state.history.insert(0, {
                     "id": live_sig,
@@ -90,11 +84,11 @@ with st.sidebar:
         cols[1].caption(h["time"])
 
     if st.session_state.history:
-        if st.button("清空记录", key="clear_hist"):
+        if st.button("清空历史记录", key="clear_hist"):
             st.session_state.history = []
             st.session_state.view = "live"
 
-# ================= 确定当前展示的 State =================
+# ================= 确定当前展示 State =================
 state = live_state
 if st.session_state.view != "live":
     hit = next((h for h in st.session_state.history if h["id"] == st.session_state.view), None)
@@ -102,14 +96,14 @@ if st.session_state.view != "live":
 
 if state is None:
     st.title("GA4 转化与 SEO 看板")
-    st.info("👈 请在左侧一次性拖入 GA4 导出的相关 CSV 文件进行分析。")
+    st.info("👈 请在左侧上传 GA4 导出的 CSV 文件。即使只传 1 份文件（如仅传 SEO 下载或购买数据）也能正常展示相应板块。")
     st.stop()
 
-# ================= 顶栏：标题、日期区间与导出按钮 =================
+# ================= 顶栏 =================
 col_title, col_export = st.columns([7, 3])
 with col_title:
     st.markdown("### 核心指标概览")
-    st.caption(f"🗓️ **{state['date']['detail_label']}**")
+    st.caption(f"🗓️ **{state['date']['detail_label']}** · 站点: {state['site']}")
 with col_export:
     b1, b2, b3 = st.columns(3)
     rep = core.build_report(state)
@@ -117,23 +111,31 @@ with col_export:
     b2.download_button("XLSX", core.export_xlsx(rep), core.export_filename(state, "xlsx"))
     b3.download_button("CSV", core.export_csv(rep), core.export_filename(state, "csv"), mime="text/csv")
 
-# ================= KPI 卡片行 =================
+# ================= KPI 卡片 =================
 kpis = core.compute_kpis(state)
 kpi_cols = st.columns(len(kpis))
 for i, k in enumerate(kpis):
     with kpi_cols[i]:
-        arrow = "▲" if k["dir"] >= 0 else "▼"
-        color_cls = "kpi-delta-up" if k["dir"] >= 0 else "kpi-delta-down"
-        st.markdown(f"""
-        <div class="kpi-card">
-            <div class="kpi-title">{k['label']}</div>
-            <div class="kpi-value">{k['cur_s']} <span class="{color_cls}">{arrow} {k['change_s']}</span></div>
-        </div>
-        """, unsafe_allow_html=True)
+        if k["cur"] is None:
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-title">{k['label']}</div>
+                <div class="kpi-value" style="font-size:1.2rem;color:#9CA3AF;">待传数据</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            arrow = "▲" if k["dir"] >= 0 else "▼"
+            color_cls = "kpi-delta-up" if k["dir"] >= 0 else "kpi-delta-down"
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-title">{k['label']}</div>
+                <div class="kpi-value">{k['cur_s']} <span class="{color_cls}">{arrow} {k['change_s']}</span></div>
+            </div>
+            """, unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ================= 选项卡：客户端下载量 / 购买量 / 渠道流量 / SEO 页面分析 =================
+# ================= 各板块 Tab =================
 t_dl, t_buy, t_tf, t_seo = st.tabs(["客户端下载量", "购买量", "渠道流量", "SEO 页面分析"])
 
 with t_dl:
@@ -141,24 +143,23 @@ with t_dl:
     if df_dl is not None and not df_dl.empty:
         st.dataframe(df_dl, hide_index=True, use_container_width=True)
     else:
-        st.caption("暂无客户端下载量数据。")
+        st.info("未上传客户端下载数据文件（download.csv）。")
 
 with t_buy:
     df_buy = core.buy_df(state, "lifetime")
     if df_buy is not None and not df_buy.empty:
         st.dataframe(df_buy, hide_index=True, use_container_width=True)
     else:
-        st.caption("暂无购买量数据。")
+        st.info("未上传购买数据文件（buy.csv 或 SEO-buy.csv）。")
 
 with t_tf:
     df_tf = core.traffic_df(state)
     if df_tf is not None and not df_tf.empty:
         st.dataframe(df_tf, hide_index=True, use_container_width=True)
     else:
-        st.caption("暂无渠道流量数据。")
+        st.info("未上传用户获取渠道数据文件。")
 
 with t_seo:
-    # 1. 筛选条件栏
     f_col1, f_col2, f_col3 = st.columns([3, 3, 4])
     with f_col1:
         inc_kw = st.text_input("路径包含：", value=st.session_state.path_inc, key="in_inc")
@@ -178,19 +179,16 @@ with t_seo:
             st.session_state.path_exc = ""
             st.rerun()
 
-    # 2. 模式与排名过滤
     c_m1, c_m2 = st.columns([6, 4])
     with c_m1:
         view_mode = st.radio("展现模式", ["仅唯一 PV", "仅下载点击", "合并查看"], horizontal=True, index=2)
     with c_m2:
         top_filter = st.selectbox("显示行数", ["TOP 10 页面", "TOP 20 页面", "TOP 50 页面", "全部"], index=0)
 
-    # 3. 聚合数据计算
     df_seo, matched_pages, tot_pv, tot_clicks, avg_ctr = core.seo_combined_df(
         state, include_keyword=inc_kw, exclude_keyword=exc_kw, view_mode=view_mode
     )
 
-    # 4. 指标摘要栏（对齐设计图）
     st.markdown(f"""
     <div style="display:flex; gap:16px; margin: 10px 0; font-size:0.9rem;">
         <span>匹配 <b>{matched_pages}</b> 个页面</span>
@@ -200,9 +198,8 @@ with t_seo:
     </div>
     """, unsafe_allow_html=True)
 
-    # 5. 表格渲染
     if not df_seo.empty:
         limit_map = {"TOP 10 页面": 10, "TOP 20 页面": 20, "TOP 50 页面": 50, "全部": len(df_seo)}
         st.dataframe(df_seo.head(limit_map[top_filter]), hide_index=True, use_container_width=True)
     else:
-        st.info("没有匹配到符合筛选条件的页面数据。")
+        st.info("未上传 SEO 相关数据（网页和屏幕或 SEO 下载点击），或当前筛选无匹配项。")
