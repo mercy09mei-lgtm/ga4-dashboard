@@ -1,6 +1,7 @@
-"""GA4 看板 Web 界面：支持批量/单份上传识别、SEO合并分析、快捷筛选与导出。"""
+"""GA4 看板 Web 界面：支持批量上传识别、SEO 四栏看板与产品线对比图表。"""
 import hashlib
 from datetime import datetime
+import plotly.express as px
 import streamlit as st
 import core
 
@@ -30,8 +31,8 @@ st.session_state.setdefault("view", "live")
 st.session_state.setdefault("path_inc", "/guide/")
 st.session_state.setdefault("path_exc", "/de/")
 
-# ================= 侧边栏：上传与历史记录 =================
-texts = {"traffic": None, "download": None, "buy": None, "seo": None, "seo_click": None}
+# ================= 侧边栏：批量/单份上传 =================
+texts = {"traffic": None, "download": None, "buy": None, "seo": None, "seo_click": None, "seo_buy": None}
 file_badges = []
 
 with st.sidebar:
@@ -40,7 +41,7 @@ with st.sidebar:
         "一次拖入多个 CSV\n自动识别文件类型",
         type=["csv"],
         accept_multiple_files=True,
-        help="上传任意 1 个或多个 CSV 均可生成对应分析板块",
+        help="支持同时拖入用户获取、download、buy、网页和屏幕、SEO-download、SEO-buy文件",
         key="batch_uploader"
     )
 
@@ -150,7 +151,7 @@ with t_buy:
     if df_buy is not None and not df_buy.empty:
         st.dataframe(df_buy, hide_index=True, use_container_width=True)
     else:
-        st.info("未上传购买数据文件（buy.csv 或 SEO-buy.csv）。")
+        st.info("未上传主站购买量数据（buy.csv）。SEO 页面的购买点击请在「SEO 页面分析」选项卡中查看。")
 
 with t_tf:
     df_tf = core.traffic_df(state)
@@ -160,6 +161,7 @@ with t_tf:
         st.info("未上传用户获取渠道数据文件。")
 
 with t_seo:
+    # 1. 筛选条件栏
     f_col1, f_col2, f_col3 = st.columns([3, 3, 4])
     with f_col1:
         inc_kw = st.text_input("路径包含：", value=st.session_state.path_inc, key="in_inc")
@@ -179,27 +181,79 @@ with t_seo:
             st.session_state.path_exc = ""
             st.rerun()
 
+    # 2. 四栏看板选择
     c_m1, c_m2 = st.columns([6, 4])
     with c_m1:
-        view_mode = st.radio("展现模式", ["仅唯一 PV", "仅下载点击", "合并查看"], horizontal=True, index=2)
+        view_mode = st.radio("看板栏目", ["唯一 PV", "下载转化", "购买转化", "合并看板"], horizontal=True, index=3)
     with c_m2:
         top_filter = st.selectbox("显示行数", ["TOP 10 页面", "TOP 20 页面", "TOP 50 页面", "全部"], index=0)
 
-    df_seo, matched_pages, tot_pv, tot_clicks, avg_ctr = core.seo_combined_df(
+    # 3. 聚合数据计算
+    df_seo, matched_pages, tot_pv, tot_dl, tot_buy_clicks, avg_combo_rate, has_pv = core.seo_combined_df(
         state, include_keyword=inc_kw, exclude_keyword=exc_kw, view_mode=view_mode
     )
 
+    # 4. 缺 PV 友好黄色提示
+    if not has_pv:
+        st.warning("⚠️ 未检测到网页 PV 数据（未上传《网页和屏幕.csv》），转化率暂时无法计算，当前仅展示点击量。")
+
+    # 5. 指标摘要栏
+    pv_summary = f"唯一 PV 合计 <b>{tot_pv:,}</b>" if has_pv else "唯一 PV <b>未上传</b>"
+    rate_summary = f"综合转化率 <b>{avg_combo_rate:.1f}%</b>" if has_pv else "转化率 <b>暂不可用</b>"
     st.markdown(f"""
-    <div style="display:flex; gap:16px; margin: 10px 0; font-size:0.9rem;">
+    <div style="display:flex; gap:16px; margin: 10px 0; font-size:0.9rem; background:#F9FAFB; padding:8px 12px; border-radius:6px;">
         <span>匹配 <b>{matched_pages}</b> 个页面</span>
-        <span>唯一 PV 合计 <b>{tot_pv:,}</b></span>
-        <span>下载点击合计 <b>{tot_clicks:,}</b></span>
-        <span>平均点击率 <b>{avg_ctr:.1f}%</b></span>
+        <span>{pv_summary}</span>
+        <span>下载点击合计 <b>{tot_dl:,}</b></span>
+        <span>购买点击合计 <b>{tot_buy_clicks:,}</b></span>
+        <span>{rate_summary}</span>
     </div>
     """, unsafe_allow_html=True)
 
+    # 6. 表格渲染
     if not df_seo.empty:
         limit_map = {"TOP 10 页面": 10, "TOP 20 页面": 20, "TOP 50 页面": 50, "全部": len(df_seo)}
         st.dataframe(df_seo.head(limit_map[top_filter]), hide_index=True, use_container_width=True)
     else:
-        st.info("未上传 SEO 相关数据（网页和屏幕或 SEO 下载点击），或当前筛选无匹配项。")
+        st.info("未匹配到符合筛选条件的 SEO 页面数据。")
+
+    # 7. 可视化图表拓展
+    st.markdown("---")
+    st.markdown("#### 📊 SEO 趋势与对比分析")
+    chart_col1, chart_col2 = st.columns([5, 5])
+    with chart_col1:
+        dim_choice = st.radio("分析维度", ["方案 1：按 TOP N 页面横向对比", "方案 2：按产品线汇总对比"], horizontal=True)
+    with chart_col2:
+        chart_type = st.radio("图表类型", ["柱状图", "折线图"], horizontal=True)
+
+    if dim_choice.startswith("方案 1"):
+        if not df_seo.empty:
+            show_n = 10 if top_filter == "TOP 10 页面" else (20 if top_filter == "TOP 20 页面" else 30)
+            df_chart = df_seo.head(show_n).copy()
+            # 缩短 URL 便于坐标轴展示
+            df_chart["短路径"] = df_chart["网页路径"].apply(lambda x: x.split('/')[-1] or x)
+
+            # 动态选择对比列
+            y_cols = [c for c in ["本期PV", "本期下载", "本期购买", "本期下载点击", "本期购买点击"] if c in df_chart.columns]
+            if y_cols:
+                if chart_type == "柱状图":
+                    fig = px.bar(df_chart, x="短路径", y=y_cols, barmode="group",
+                                 title=f"页面指标横向对比 (TOP {show_n})", color_discrete_sequence=[ACCENT, "#3B82F6", "#10B981"])
+                else:
+                    fig = px.line(df_chart, x="短路径", y=y_cols, markers=True,
+                                  title=f"页面指标趋势对比 (TOP {show_n})", color_discrete_sequence=[ACCENT, "#3B82F6", "#10B981"])
+                fig.update_layout(xaxis_tickangle=-35, margin=dict(t=50, b=50))
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        df_prod = core.seo_product_summary_df(state)
+        if not df_prod.empty:
+            if chart_type == "柱状图":
+                fig = px.bar(df_prod, x="产品名称", y=["本期下载点击", "本期购买点击"], barmode="stack",
+                             title="各产品线 SEO 点击分布（下载 + 购买）", color_discrete_sequence=["#3B82F6", ACCENT])
+            else:
+                fig = px.line(df_prod, x="产品名称", y=["本期下载点击", "本期购买点击"], markers=True,
+                              title="各产品线 SEO 点击分布趋势", color_discrete_sequence=["#3B82F6", ACCENT])
+            fig.update_layout(xaxis_tickangle=-25, margin=dict(t=50, b=50))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("暂无可聚合的产品线点击数据。")
