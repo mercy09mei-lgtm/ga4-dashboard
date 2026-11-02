@@ -21,6 +21,23 @@ SIDIFY_DOWNLOAD_RULES = [
     (r"deezer-music-converter(-arm)?\.dmg", "Deezer mac"),
 ]
 
+# SEO 购买点击映射（buynow URL -> 产品名称 + 操作系统）
+SIDIFY_SEO_BUY_RULES = [
+    (r"spotify-windows/buynow", "Spotify Win"),
+    (r"spotify-android/buynow", "Spotify Android"),
+    (r"spotify/buynow", "Spotify Mac"),
+    (r"amazon-converter-windows/buynow", "Amazon Win"),
+    (r"amazon-converter/buynow", "Amazon Mac"),
+    (r"apple-music-windows/buynow", "Apple Win"),
+    (r"apple-music/buynow", "Apple Mac"),
+    (r"deezer-converter-windows/buynow", "Deezer Win"),
+    (r"deezer-converter-mac/buynow", "Deezer Mac"),
+    (r"tidal-downloader/buynow", "Tidal Win"),
+    (r"youtube-music/buynow", "YouTube Win"),
+    (r"all-in-one/buynow-windows", "MusicOne Win"),
+    (r"all-in-one/buynow", "MusicOne Mac"),
+]
+
 SIDIFY_PRODUCT_MAP = {
     "sp": "spotify", "spotify": "spotify",
     "all-in-one": "musicOne", "all_in_one": "musicOne", "musicone": "musicOne",
@@ -31,11 +48,16 @@ SIDIFY_PRODUCT_MAP = {
     "deezer": "Deezer", "dz": "Deezer",
 }
 
-# ================= 2. NoteBurner 规则配置 =================
+# ================= 2. NoteBurner 规则配置（模板可扩充） =================
 NOTEBURNER_DOWNLOAD_RULES = [
     (r"noteburner-spotify-music-converter(-arm)?\.exe", "spotify win"),
     (r"noteburner-spotify-music-converter(-arm)?\.dmg", "spotify mac"),
     (r"noteburner-youtube-video-downloader\.exe", "yt-dl win"),
+]
+
+NOTEBURNER_SEO_BUY_RULES = [
+    (r"spotify-windows/buynow", "Spotify Win"),
+    (r"spotify/buynow", "Spotify Mac"),
 ]
 
 NOTEBURNER_PRODUCT_MAP = {
@@ -59,11 +81,13 @@ def get_rules_for_site(site_domain: str):
     if "noteburner" in domain:
         return {
             "download_rules": NOTEBURNER_DOWNLOAD_RULES,
+            "seo_buy_rules": NOTEBURNER_SEO_BUY_RULES,
             "product_map": NOTEBURNER_PRODUCT_MAP,
             "plan_map": PLAN_MAP,
         }
     return {
         "download_rules": SIDIFY_DOWNLOAD_RULES,
+        "seo_buy_rules": SIDIFY_SEO_BUY_RULES,
         "product_map": SIDIFY_PRODUCT_MAP,
         "plan_map": PLAN_MAP,
     }
