@@ -75,7 +75,6 @@ def parse_site_domain(text):
     return "sidify.de"
 
 
-# ================= 文件类型自动探测 =================
 def detect_file_type(content: str, filename: str = ""):
     head = "\n".join(content.splitlines()[:20])
     fn = filename.lower()
