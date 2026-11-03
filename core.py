@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 import pandas as pd
 import rules
 
+PLAN_CHOICES = rules.PLAN_CHOICES
+
 UNKNOWN_DATE = {
     "type": "unknown", "cur_days": 0, "prev_days": 0, "file_tag": "UNKNOWN",
     "cur_label": "本期", "prev_label": "上期", "detail_label": "本期 vs 上期"
@@ -90,7 +92,7 @@ def parse_site_domain(text):
 
 # ================= 文件自动探测 =================
 def detect_file_type(content: str, filename: str = ""):
-    head = "\n".join(content.splitlines()[:20])
+    head = "\n".join(content.splitlines()[:20]).lower()
     fn = filename.lower()
     if "seo转化计算-下载" in head or "seo-download" in fn:
         return "seo_click", "下载点击"
@@ -219,8 +221,10 @@ def parse_buy_csv_content(text, rule_bundle):
                 parts = current_key.split('_')
                 if len(parts) >= 3:
                     raw_prod = parts[1].lower()
-                    raw_os = parts[2].lower() if len(parts) >= 4 and parts[2].lower() in ["win", "mac", "android"] else "win"
-                    raw_plan = "_".join(parts[3:] if raw_os != "win" else parts[2:]).lower()
+                    has_os = parts[2].lower() in ["win", "mac", "android"]
+                    raw_os = parts[2].lower() if has_os else "win"
+                    # 有显式系统标识时，套餐从第 4 段开始；否则默认 win，套餐从第 3 段开始
+                    raw_plan = "_".join(parts[3:] if has_os else parts[2:]).lower()
                 else:
                     raw_prod, raw_os, raw_plan = "spotify", "win", "lifetime"
                 target_col = f"{prod_map.get(raw_prod, raw_prod)} {raw_os}"
@@ -561,10 +565,36 @@ def seo_combined_df(state, include_keyword="", exclude_keyword="", view_mode="�
     return df, len(filtered_paths), tot_pv_c, tot_dl_c, tot_buy_c, avg_ctr, has_pv
 
 
+_PROD_CANON = {"spotify": "Spotify", "musicone": "MusicOne", "amazc": "Amazon", "amazon": "Amazon",
+               "tidal": "Tidal", "apple": "Apple", "youtube": "YouTube", "deezer": "Deezer"}
+_OS_CANON = {"win": "Win", "mac": "Mac", "android": "Android"}
+
+
+def normalize_seo_product(name):
+    """把 'spotify win' / 'spotify安卓' / 'Spotify Win' 统一成 '产品 系统' 的同一写法。"""
+    n = str(name).strip()
+    low = n.lower()
+    if low.endswith("安卓"):
+        low = low[:-2] + " android"
+    parts = low.split()
+    if len(parts) == 2 and parts[0] in _PROD_CANON and parts[1] in _OS_CANON:
+        return f"{_PROD_CANON[parts[0]]} {_OS_CANON[parts[1]]}"
+    return n
+
+
+def _merge_prod(d):
+    out = {"cur": {}, "prev": {}}
+    for p in ("cur", "prev"):
+        for k, v in (d or {}).get(p, {}).items():
+            nk = normalize_seo_product(k)
+            out[p][nk] = out[p].get(nk, 0) + v
+    return out
+
+
 def seo_product_summary_df(state):
     """产品线汇总分析（下载点击 + 购买点击按产品聚合）"""
-    dl_prods = state.get("seo_prod_click") or {"cur": {}, "prev": {}}
-    buy_prods = state.get("seo_buy_prod_click") or {"cur": {}, "prev": {}}
+    dl_prods = _merge_prod(state.get("seo_prod_click"))
+    buy_prods = _merge_prod(state.get("seo_buy_prod_click"))
 
     all_p = set(dl_prods.get("cur", {}).keys()) | set(dl_prods.get("prev", {}).keys()) | \
             set(buy_prods.get("cur", {}).keys()) | set(buy_prods.get("prev", {}).keys())
@@ -602,7 +632,11 @@ def buy_all_df(state):
                     "上期购买量": vals["prev"]
                 })
     df = pd.DataFrame(rows)
-    return df
+    if df.empty:
+        return df
+    df["差额"] = df["本期购买量"] - df["上期购买量"]
+    df["环比变动"] = df.apply(lambda r: format_pct_change(r["差额"] / r["上期购买量"] * 100) if r["上期购买量"] else "-", axis=1)
+    return df.sort_values("本期购买量", ascending=False).reset_index(drop=True)
 
 
 def download_df(state):
@@ -644,7 +678,7 @@ def traffic_df(state):
 def build_report(state):
     sections = [("核心指标概览", pd.DataFrame([{"指标": k["label"], "本期": k["cur_s"], "上期": k["prev_s"], "环比": k["change_s"]} for k in compute_kpis(state)]))]
     df_dl = download_df(state)
-    df_buy = buy_df(state)
+    df_buy = buy_all_df(state)
     df_tf = traffic_df(state)
     df_seo, _, _, _, _, _, _ = seo_combined_df(state, view_mode="合并看板")
 

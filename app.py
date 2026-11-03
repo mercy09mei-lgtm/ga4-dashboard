@@ -55,8 +55,14 @@ def style_table(df):
 
 st.session_state.setdefault("history", [])
 st.session_state.setdefault("view", "live")
-st.session_state.setdefault("path_inc", "/guide/")
-st.session_state.setdefault("path_exc", "/de/")
+st.session_state.setdefault("in_inc", "/guide/")
+st.session_state.setdefault("in_exc", "")
+
+
+def _set_filter(inc, exc=None):
+    st.session_state["in_inc"] = inc
+    if exc is not None:
+        st.session_state["in_exc"] = exc
 
 # ================= 侧边栏：批量/单份上传 =================
 texts = {"traffic": None, "download": None, "buy": None, "seo": None, "seo_click": None, "seo_buy": None}
@@ -170,7 +176,7 @@ t_dl, t_buy, t_tf, t_seo = st.tabs(["客户端下载量", "购买量", "渠道�
 with t_dl:
     df_dl = core.download_df(state)
     if df_dl is not None and not df_dl.empty:
-        st.dataframe(style_table(df_dl), hide_index=True, use_container_width=True)
+        st.dataframe(style_table(df_dl), hide_index=True, width="stretch")
 
         st.markdown("---")
         st.markdown("#### 📊 客户端下载量趋势与对比")
@@ -185,7 +191,7 @@ with t_dl:
             fig_dl = px.line(df_dl, x="产品包", y=["本期", "上期"], markers=True,
                              title="各产品客户端下载量趋势", color_discrete_sequence=[ACCENT, "#3B82F6"])
         fig_dl.update_layout(xaxis_tickangle=-30, margin=dict(t=50, b=50))
-        st.plotly_chart(fig_dl, use_container_width=True)
+        st.plotly_chart(fig_dl, width="stretch")
     else:
         st.info("未上传客户端下载数据文件（download.csv）。")
 
@@ -195,11 +201,11 @@ with t_buy:
     if df_buy_all is not None and not df_buy_all.empty:
         plan_label = st.radio("套餐周期明细", ["全部"] + list(core.PLAN_CHOICES), horizontal=True, key="plan_choice")
         if plan_label == "全部":
-            st.dataframe(style_table(df_buy_all), hide_index=True, use_container_width=True)
+            st.dataframe(style_table(df_buy_all), hide_index=True, width="stretch")
         else:
             df_buy_sub = core.buy_df(state, core.PLAN_CHOICES[plan_label])
             if df_buy_sub is not None and not df_buy_sub.empty:
-                st.dataframe(style_table(df_buy_sub), hide_index=True, use_container_width=True)
+                st.dataframe(style_table(df_buy_sub), hide_index=True, width="stretch")
             else:
                 st.caption(f"暂无 {plan_label} 维度的购买数据。")
 
@@ -229,7 +235,7 @@ with t_buy:
                 fig_buy = px.line(df_buy_all, x="订阅套餐", y="本期购买量", color="产品", markers=True,
                                   title="各订阅套餐下的产品分布趋势", color_discrete_sequence=px.colors.qualitative.Safe)
         fig_buy.update_layout(xaxis_tickangle=-25, margin=dict(t=50, b=50))
-        st.plotly_chart(fig_buy, use_container_width=True)
+        st.plotly_chart(fig_buy, width="stretch")
     else:
         st.info("未上传主站购买量数据（buy.csv）。SEO 页面的购买点击请在「SEO 页面分析」选项卡中查看。")
 
@@ -237,7 +243,7 @@ with t_buy:
 with t_tf:
     df_tf = core.traffic_df(state)
     if df_tf is not None and not df_tf.empty:
-        st.dataframe(style_table(df_tf), hide_index=True, use_container_width=True)
+        st.dataframe(style_table(df_tf), hide_index=True, width="stretch")
 
         st.markdown("---")
         st.markdown("#### 📊 各渠道用户获取对比")
@@ -252,7 +258,7 @@ with t_tf:
             fig_tf = px.line(df_tf, x="渠道", y=["本期", "上期"], markers=True,
                              title="各渠道流量走势对比", color_discrete_sequence=["#3B82F6", ACCENT])
         fig_tf.update_layout(xaxis_tickangle=-30, margin=dict(t=50, b=50))
-        st.plotly_chart(fig_tf, use_container_width=True)
+        st.plotly_chart(fig_tf, width="stretch")
     else:
         st.info("未上传用户获取渠道数据文件。")
 
@@ -260,26 +266,19 @@ with t_tf:
 with t_seo:
     f_col1, f_col2, f_col3 = st.columns([3, 3, 4])
     with f_col1:
-        inc_kw = st.text_input("路径包含：", value=st.session_state.path_inc, key="in_inc")
+        inc_kw = st.text_input("路径包含：", key="in_inc")
     with f_col2:
-        exc_kw = st.text_input("排除：", value=st.session_state.path_exc, key="in_exc")
+        exc_kw = st.text_input("排除：", key="in_exc")
     with f_col3:
         st.write("快捷筛选：")
         q1, q2, q3 = st.columns(3)
-        if q1.button("/guide/"):
-            st.session_state.path_inc = "/guide/"
-            st.rerun()
-        if q2.button("/blog/"):
-            st.session_state.path_inc = "/blog/"
-            st.rerun()
-        if q3.button("全部"):
-            st.session_state.path_inc = ""
-            st.session_state.path_exc = ""
-            st.rerun()
+        q1.button("/guide/", on_click=_set_filter, args=("/guide/",), key="q_guide")
+        q2.button("/blog/", on_click=_set_filter, args=("/blog/",), key="q_blog")
+        q3.button("全部", on_click=_set_filter, args=("", ""), key="q_all")
 
     c_m1, c_m2 = st.columns([6, 4])
     with c_m1:
-        view_mode = st.radio("看板栏目", ["唯一 PV", "下载转化", "购买转化", "合并看板"], horizontal=True, index=3)
+        view_mode = st.radio("看板栏目", ["唯一 PV", "下载转化", "购买转化", "合并看板"], horizontal=True, index=3, key="seo_view_mode")
     with c_m2:
         top_filter = st.selectbox("显示行数", ["TOP 10 页面", "TOP 20 页面", "TOP 50 页面", "全部"], index=0)
 
@@ -304,7 +303,7 @@ with t_seo:
 
     if not df_seo.empty:
         limit_map = {"TOP 10 页面": 10, "TOP 20 页面": 20, "TOP 50 页面": 50, "全部": len(df_seo)}
-        st.dataframe(style_table(df_seo.head(limit_map[top_filter])), hide_index=True, use_container_width=True)
+        st.dataframe(style_table(df_seo.head(limit_map[top_filter])), hide_index=True, width="stretch")
     else:
         st.info("未匹配到符合筛选条件的 SEO 页面数据。")
 
@@ -312,7 +311,7 @@ with t_seo:
     st.markdown("#### 📊 SEO 趋势与对比分析")
     chart_col1, chart_col2 = st.columns([5, 5])
     with chart_col1:
-        dim_choice = st.radio("分析维度", ["方案 1：按 TOP N 页面横向对比", "方案 2：按产品线汇总对比"], horizontal=True)
+        dim_choice = st.radio("分析维度", ["方案 1：按 TOP N 页面横向对比", "方案 2：按产品线汇总对比"], horizontal=True, key="seo_dim")
     with chart_col2:
         chart_type = st.radio("图表类型", ["柱状图", "折线图"], horizontal=True, key="seo_chart_type")
 
@@ -322,16 +321,23 @@ with t_seo:
             df_chart = df_seo.head(show_n).copy()
             df_chart["短路径"] = df_chart["网页路径"].apply(lambda x: x.split('/')[-1] or x)
 
-            y_cols = [c for c in ["本期PV", "本期下载", "本期购买", "本期下载点击", "本期购买点击"] if c in df_chart.columns]
+            y_map = {
+                "唯一 PV": ["本期PV", "上期PV"],
+                "下载转化": ["本期下载", "上期下载"],
+                "购买转化": ["本期购买", "上期购买"],
+                "合并看板": ["本期PV", "本期下载", "本期购买"],
+            }
+            y_cols = [c for c in y_map[view_mode] if c in df_chart.columns]
             if y_cols:
+                palette = [ACCENT, "#3B82F6", "#10B981"] if view_mode == "合并看板" else [ACCENT, "#C9CED6"]
                 if chart_type == "柱状图":
                     fig = px.bar(df_chart, x="短路径", y=y_cols, barmode="group",
-                                 title=f"页面指标横向对比 (TOP {show_n})", color_discrete_sequence=[ACCENT, "#3B82F6", "#10B981"])
+                                 title=f"{view_mode} · 页面横向对比 (TOP {show_n})", color_discrete_sequence=palette)
                 else:
                     fig = px.line(df_chart, x="短路径", y=y_cols, markers=True,
-                                  title=f"页面指标趋势对比 (TOP {show_n})", color_discrete_sequence=[ACCENT, "#3B82F6", "#10B981"])
+                                  title=f"{view_mode} · 页面趋势对比 (TOP {show_n})", color_discrete_sequence=palette)
                 fig.update_layout(xaxis_tickangle=-35, margin=dict(t=50, b=50))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
     else:
         df_prod = core.seo_product_summary_df(state)
         if not df_prod.empty:
@@ -342,6 +348,6 @@ with t_seo:
                 fig = px.line(df_prod, x="产品名称", y=["本期下载点击", "本期购买点击"], markers=True,
                               title="各产品线 SEO 点击分布趋势", color_discrete_sequence=["#3B82F6", ACCENT])
             fig.update_layout(xaxis_tickangle=-25, margin=dict(t=50, b=50))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("暂无可聚合的产品线点击数据。")
