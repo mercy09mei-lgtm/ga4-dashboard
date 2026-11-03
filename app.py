@@ -1,4 +1,4 @@
-"""GA4 看板 Web 界面：支持批量上传识别、SEO 四栏看板与红绿箭头样式高亮。"""
+"""GA4 看板 Web 界面：全看板可视化图表（下载量/购买量/渠道流量/SEO对比分析）、批量上传识别与红绿高亮。"""
 import hashlib
 from datetime import datetime
 import plotly.express as px
@@ -166,29 +166,98 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ================= 各板块 Tab =================
 t_dl, t_buy, t_tf, t_seo = st.tabs(["客户端下载量", "购买量", "渠道流量", "SEO 页面分析"])
 
+# ----------------- 1. 客户端下载量 -----------------
 with t_dl:
     df_dl = core.download_df(state)
     if df_dl is not None and not df_dl.empty:
         st.dataframe(style_table(df_dl), hide_index=True, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### 📊 客户端下载量趋势与对比")
+        chart_col1, _ = st.columns([4, 6])
+        with chart_col1:
+            dl_chart_type = st.radio("图表类型", ["柱状图", "折线图"], horizontal=True, key="dl_chart_type")
+
+        if dl_chart_type == "柱状图":
+            fig_dl = px.bar(df_dl, x="产品包", y=["本期", "上期"], barmode="group",
+                            title="各产品客户端下载量对比", color_discrete_sequence=[ACCENT, "#C9CED6"])
+        else:
+            fig_dl = px.line(df_dl, x="产品包", y=["本期", "上期"], markers=True,
+                             title="各产品客户端下载量趋势", color_discrete_sequence=[ACCENT, "#3B82F6"])
+        fig_dl.update_layout(xaxis_tickangle=-30, margin=dict(t=50, b=50))
+        st.plotly_chart(fig_dl, use_container_width=True)
     else:
         st.info("未上传客户端下载数据文件（download.csv）。")
 
+# ----------------- 2. 购买量 -----------------
 with t_buy:
-    df_buy = core.buy_df(state, "lifetime")
-    if df_buy is not None and not df_buy.empty:
-        st.dataframe(style_table(df_buy), hide_index=True, use_container_width=True)
+    df_buy_all = core.buy_all_df(state)
+    if df_buy_all is not None and not df_buy_all.empty:
+        plan_label = st.radio("套餐周期明细", ["全部"] + list(core.PLAN_CHOICES), horizontal=True, key="plan_choice")
+        if plan_label == "全部":
+            st.dataframe(style_table(df_buy_all), hide_index=True, use_container_width=True)
+        else:
+            df_buy_sub = core.buy_df(state, core.PLAN_CHOICES[plan_label])
+            if df_buy_sub is not None and not df_buy_sub.empty:
+                st.dataframe(style_table(df_buy_sub), hide_index=True, use_container_width=True)
+            else:
+                st.caption(f"暂无 {plan_label} 维度的购买数据。")
+
+        st.markdown("---")
+        st.markdown("#### 📊 购买量多维分析图表")
+        b_c1, b_c2 = st.columns([6, 4])
+        with b_c1:
+            buy_dim = st.radio("分析维度", [
+                "维度 1：按产品分类（展示各产品下各订阅）",
+                "维度 2：按订阅分类（展示各订阅下各产品）"
+            ], horizontal=True, key="buy_dim")
+        with b_c2:
+            buy_chart_type = st.radio("图表类型", ["柱状图", "折线图"], horizontal=True, key="buy_chart_type")
+
+        if buy_dim.startswith("维度 1"):
+            if buy_chart_type == "柱状图":
+                fig_buy = px.bar(df_buy_all, x="产品", y="本期购买量", color="订阅套餐", barmode="stack",
+                                 title="各产品购买量及订阅分布（堆叠）", color_discrete_sequence=px.colors.qualitative.Set2)
+            else:
+                fig_buy = px.line(df_buy_all, x="产品", y="本期购买量", color="订阅套餐", markers=True,
+                                  title="各产品购买量趋势（按订阅分类）", color_discrete_sequence=px.colors.qualitative.Set2)
+        else:
+            if buy_chart_type == "柱状图":
+                fig_buy = px.bar(df_buy_all, x="订阅套餐", y="本期购买量", color="产品", barmode="group",
+                                 title="各订阅套餐下的产品分布对比", color_discrete_sequence=px.colors.qualitative.Safe)
+            else:
+                fig_buy = px.line(df_buy_all, x="订阅套餐", y="本期购买量", color="产品", markers=True,
+                                  title="各订阅套餐下的产品分布趋势", color_discrete_sequence=px.colors.qualitative.Safe)
+        fig_buy.update_layout(xaxis_tickangle=-25, margin=dict(t=50, b=50))
+        st.plotly_chart(fig_buy, use_container_width=True)
     else:
         st.info("未上传主站购买量数据（buy.csv）。SEO 页面的购买点击请在「SEO 页面分析」选项卡中查看。")
 
+# ----------------- 3. 渠道流量 -----------------
 with t_tf:
     df_tf = core.traffic_df(state)
     if df_tf is not None and not df_tf.empty:
         st.dataframe(style_table(df_tf), hide_index=True, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### 📊 各渠道用户获取对比")
+        tf_c1, _ = st.columns([4, 6])
+        with tf_c1:
+            tf_chart_type = st.radio("图表类型", ["柱状图", "折线图"], horizontal=True, key="tf_chart_type")
+
+        if tf_chart_type == "柱状图":
+            fig_tf = px.bar(df_tf, x="渠道", y=["本期", "上期"], barmode="group",
+                            title="各渠道流量对比（本期 vs 上期）", color_discrete_sequence=["#3B82F6", "#C9CED6"])
+        else:
+            fig_tf = px.line(df_tf, x="渠道", y=["本期", "上期"], markers=True,
+                             title="各渠道流量走势对比", color_discrete_sequence=["#3B82F6", ACCENT])
+        fig_tf.update_layout(xaxis_tickangle=-30, margin=dict(t=50, b=50))
+        st.plotly_chart(fig_tf, use_container_width=True)
     else:
         st.info("未上传用户获取渠道数据文件。")
 
+# ----------------- 4. SEO 页面分析 -----------------
 with t_seo:
-    # 1. 筛选条件栏
     f_col1, f_col2, f_col3 = st.columns([3, 3, 4])
     with f_col1:
         inc_kw = st.text_input("路径包含：", value=st.session_state.path_inc, key="in_inc")
@@ -208,23 +277,19 @@ with t_seo:
             st.session_state.path_exc = ""
             st.rerun()
 
-    # 2. 四栏看板选择
     c_m1, c_m2 = st.columns([6, 4])
     with c_m1:
         view_mode = st.radio("看板栏目", ["唯一 PV", "下载转化", "购买转化", "合并看板"], horizontal=True, index=3)
     with c_m2:
         top_filter = st.selectbox("显示行数", ["TOP 10 页面", "TOP 20 页面", "TOP 50 页面", "全部"], index=0)
 
-    # 3. 聚合数据计算
     df_seo, matched_pages, tot_pv, tot_dl, tot_buy_clicks, avg_combo_rate, has_pv = core.seo_combined_df(
         state, include_keyword=inc_kw, exclude_keyword=exc_kw, view_mode=view_mode
     )
 
-    # 4. 缺 PV 友好黄色提示
     if not has_pv:
         st.warning("⚠️ 未检测到网页 PV 数据（未上传《网页和屏幕.csv》），转化率暂时无法计算，当前仅展示点击量。")
 
-    # 5. 指标摘要栏
     pv_summary = f"唯一 PV 合计 <b>{tot_pv:,}</b>" if has_pv else "唯一 PV <b>未上传</b>"
     rate_summary = f"综合转化率 <b>{avg_combo_rate:.1f}%</b>" if has_pv else "转化率 <b>暂不可用</b>"
     st.markdown(f"""
@@ -237,21 +302,19 @@ with t_seo:
     </div>
     """, unsafe_allow_html=True)
 
-    # 6. 表格渲染（套用红绿箭头样式）
     if not df_seo.empty:
         limit_map = {"TOP 10 页面": 10, "TOP 20 页面": 20, "TOP 50 页面": 50, "全部": len(df_seo)}
         st.dataframe(style_table(df_seo.head(limit_map[top_filter])), hide_index=True, use_container_width=True)
     else:
         st.info("未匹配到符合筛选条件的 SEO 页面数据。")
 
-    # 7. 可视化图表拓展
     st.markdown("---")
     st.markdown("#### 📊 SEO 趋势与对比分析")
     chart_col1, chart_col2 = st.columns([5, 5])
     with chart_col1:
         dim_choice = st.radio("分析维度", ["方案 1：按 TOP N 页面横向对比", "方案 2：按产品线汇总对比"], horizontal=True)
     with chart_col2:
-        chart_type = st.radio("图表类型", ["柱状图", "折线图"], horizontal=True)
+        chart_type = st.radio("图表类型", ["柱状图", "折线图"], horizontal=True, key="seo_chart_type")
 
     if dim_choice.startswith("方案 1"):
         if not df_seo.empty:
