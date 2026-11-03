@@ -587,6 +587,24 @@ def seo_product_summary_df(state):
     return df
 
 
+def buy_all_df(state):
+    """汇总全部套餐维度的购买数据，用于多维可视化对比"""
+    if not state.get("buy"):
+        return None
+    rows = []
+    for plan, prods in state["buy"].items():
+        for prod, vals in prods.items():
+            if vals["cur"] > 0 or vals["prev"] > 0:
+                rows.append({
+                    "产品": prod,
+                    "订阅套餐": plan,
+                    "本期购买量": vals["cur"],
+                    "上期购买量": vals["prev"]
+                })
+    df = pd.DataFrame(rows)
+    return df
+
+
 def download_df(state):
     if not state.get("dl"):
         return None
