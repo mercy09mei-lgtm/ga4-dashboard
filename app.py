@@ -145,6 +145,23 @@ with col_export:
     b2.download_button("XLSX", core.export_xlsx(rep), core.export_filename(state, "xlsx"))
     b3.download_button("CSV", core.export_csv(rep), core.export_filename(state, "csv"), mime="text/csv")
 
+# ================= 数据质量提示 =================
+SLOT_NAMES = {"traffic": "用户获取", "download": "下载量", "buy": "购买量", "seo": "网页 PV",
+              "seo_click": "SEO 下载点击", "seo_buy": "SEO 购买点击"}
+if state.get("date_mismatch"):
+    detail = "；".join(f"{SLOT_NAMES.get(k, k)}：{v}" for k, v in state["date_mismatch"].items())
+    st.warning(f"⚠️ 上传的文件时间段不一致，跨文件的转化率可能不准确。{detail}")
+
+excl_sum = core.excluded_summary(state)
+if excl_sum:
+    st.caption("🧪 已自动排除测试域名（-dev）数据：" + "；".join(f"{k} {n} 条（{v} 次）" for k, (n, v) in excl_sum.items()))
+
+df_unmatched = core.unmatched_df(state)
+if df_unmatched is not None and not df_unmatched.empty:
+    with st.expander(f"⚠️ 有 {len(df_unmatched)} 项未命中映射规则（合计 {int(df_unmatched['本期数量'].sum())}），点开查看", expanded=False):
+        st.caption("这些数据没有计入对应产品。如需归类，请在 rules.py 里补一行规则；无关的产品可忽略。")
+        st.dataframe(df_unmatched, hide_index=True, width="stretch")
+
 # ================= KPI 卡片 =================
 kpis = core.compute_kpis(state)
 kpi_cols = st.columns(len(kpis))
@@ -158,12 +175,16 @@ for i, k in enumerate(kpis):
             </div>
             """, unsafe_allow_html=True)
         else:
-            arrow = "▲" if k["dir"] >= 0 else "▼"
-            color_cls = "kpi-delta-up" if k["dir"] >= 0 else "kpi-delta-down"
+            if k["change_s"]:
+                arrow = "▲" if k["dir"] >= 0 else "▼"
+                color_cls = "kpi-delta-up" if k["dir"] >= 0 else "kpi-delta-down"
+                delta_html = f'<span class="{color_cls}">{arrow} {k["change_s"]}</span>'
+            else:  # 单一时间段，没有对比期
+                delta_html = ""
             st.markdown(f"""
             <div class="kpi-card">
                 <div class="kpi-title">{k['label']}</div>
-                <div class="kpi-value">{k['cur_s']} <span class="{color_cls}">{arrow} {k['change_s']}</span></div>
+                <div class="kpi-value">{k['cur_s']} {delta_html}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -300,6 +321,9 @@ with t_seo:
         <span>{rate_summary}</span>
     </div>
     """, unsafe_allow_html=True)
+
+    if df_seo.empty and (inc_kw or exc_kw):
+        st.info(f"没有页面路径包含「{inc_kw}」。不同站点的目录不同（例如 NoteBurner 的内容页在 /de/ 下），可以改筛选词或点「全部」。")
 
     if not df_seo.empty:
         limit_map = {"TOP 10 页面": 10, "TOP 20 页面": 20, "TOP 50 页面": 50, "全部": len(df_seo)}
