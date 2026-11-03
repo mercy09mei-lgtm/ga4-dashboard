@@ -1,30 +1,4 @@
-def style_table(df):
-    """
-    全局高亮样式：
-    包含 '▲' -> 绿色加粗
-    包含 '▼' -> 红色加粗
-    """
-    if df is None or df.empty:
-        return df
-
-    def highlight_delta(val):
-        s_val = str(val)
-        if "▲" in s_val:
-            return f"color: {UP_COLOR}; font-weight: 600;"
-        elif "▼" in s_val:
-            return f"color: {ACCENT}; font-weight: 600;"
-        return ""
-
-    # 对含有变动/环比的列自动染色，其余列保持默认
-    change_cols = [c for c in df.columns if any(k in c for k in ["环比", "变动", "PV环比", "下载环比", "购买环比"])]
-    if change_cols:
-        try:
-            return df.style.map(highlight_delta, subset=change_cols)
-        except AttributeError:
-            # 兼容低版本 pandas
-            return df.style.applymap(highlight_delta, subset=change_cols)
-    return df
-"""GA4 看板 Web 界面：支持批量上传识别、SEO 四栏看板与产品线对比图表。"""
+"""GA4 看板 Web 界面：支持批量上传识别、SEO 四栏看板与红绿箭头样式高亮。"""
 import hashlib
 from datetime import datetime
 import plotly.express as px
@@ -51,6 +25,33 @@ st.markdown(f"""
 button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT} !important; border-bottom-color: {ACCENT} !important; }}
 </style>
 """, unsafe_allow_html=True)
+
+
+def style_table(df):
+    """
+    全局高亮样式：
+    包含 '▲' -> 绿色加粗
+    包含 '▼' -> 红色加粗
+    """
+    if df is None or df.empty:
+        return df
+
+    def highlight_delta(val):
+        s_val = str(val)
+        if "▲" in s_val:
+            return f"color: {UP_COLOR}; font-weight: 600;"
+        elif "▼" in s_val:
+            return f"color: {ACCENT}; font-weight: 600;"
+        return ""
+
+    change_cols = [c for c in df.columns if any(k in c for k in ["环比", "变动", "PV环比", "下载环比", "购买环比"])]
+    if change_cols:
+        try:
+            return df.style.map(highlight_delta, subset=change_cols)
+        except AttributeError:
+            return df.style.applymap(highlight_delta, subset=change_cols)
+    return df
+
 
 st.session_state.setdefault("history", [])
 st.session_state.setdefault("view", "live")
@@ -168,21 +169,21 @@ t_dl, t_buy, t_tf, t_seo = st.tabs(["客户端下载量", "购买量", "渠道�
 with t_dl:
     df_dl = core.download_df(state)
     if df_dl is not None and not df_dl.empty:
-        st.dataframe(df_dl, hide_index=True, use_container_width=True)
+        st.dataframe(style_table(df_dl), hide_index=True, use_container_width=True)
     else:
         st.info("未上传客户端下载数据文件（download.csv）。")
 
 with t_buy:
     df_buy = core.buy_df(state, "lifetime")
     if df_buy is not None and not df_buy.empty:
-        st.dataframe(df_buy, hide_index=True, use_container_width=True)
+        st.dataframe(style_table(df_buy), hide_index=True, use_container_width=True)
     else:
         st.info("未上传主站购买量数据（buy.csv）。SEO 页面的购买点击请在「SEO 页面分析」选项卡中查看。")
 
 with t_tf:
     df_tf = core.traffic_df(state)
     if df_tf is not None and not df_tf.empty:
-        st.dataframe(df_tf, hide_index=True, use_container_width=True)
+        st.dataframe(style_table(df_tf), hide_index=True, use_container_width=True)
     else:
         st.info("未上传用户获取渠道数据文件。")
 
@@ -236,10 +237,10 @@ with t_seo:
     </div>
     """, unsafe_allow_html=True)
 
-    # 6. 表格渲染
+    # 6. 表格渲染（套用红绿箭头样式）
     if not df_seo.empty:
         limit_map = {"TOP 10 页面": 10, "TOP 20 页面": 20, "TOP 50 页面": 50, "全部": len(df_seo)}
-        st.dataframe(df_seo.head(limit_map[top_filter]), hide_index=True, use_container_width=True)
+        st.dataframe(style_table(df_seo.head(limit_map[top_filter])), hide_index=True, use_container_width=True)
     else:
         st.info("未匹配到符合筛选条件的 SEO 页面数据。")
 
@@ -256,10 +257,8 @@ with t_seo:
         if not df_seo.empty:
             show_n = 10 if top_filter == "TOP 10 页面" else (20 if top_filter == "TOP 20 页面" else 30)
             df_chart = df_seo.head(show_n).copy()
-            # 缩短 URL 便于坐标轴展示
             df_chart["短路径"] = df_chart["网页路径"].apply(lambda x: x.split('/')[-1] or x)
 
-            # 动态选择对比列
             y_cols = [c for c in ["本期PV", "本期下载", "本期购买", "本期下载点击", "本期购买点击"] if c in df_chart.columns]
             if y_cols:
                 if chart_type == "柱状图":

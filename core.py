@@ -17,6 +17,23 @@ EXPORT_SEO_TOP = 50
 SLOT_KEYS = ("traffic", "download", "buy", "seo", "seo_click", "seo_buy")
 
 
+def format_pct_change(diff_pct):
+    """全局格式化环比变动率：
+    上升：▲ +X.X%
+    下降：▼ -X.X%
+    持平：+0.0%
+    无基数：-
+    """
+    if diff_pct is None:
+        return "-"
+    if diff_pct > 0:
+        return f"▲ +{diff_pct:.1f}%"
+    elif diff_pct < 0:
+        return f"▼ {diff_pct:.1f}%"
+    else:
+        return "+0.0%"
+
+
 # ================= 日期与站点 =================
 def analyze_date_info_from_text(text):
     if not text:
@@ -502,9 +519,13 @@ def seo_combined_df(state, include_keyword="", exclude_keyword="", view_mode="�
         tot_dl_c += dl_c
         tot_buy_c += b_c
 
-        pv_change = f"{((pv_c - pv_p) / pv_p * 100):+.1f}%" if pv_p else "-"
-        dl_change = f"{((dl_c - dl_p) / dl_p * 100):+.1f}%" if dl_p else "-"
-        b_change = f"{((b_c - b_p) / b_p * 100):+.1f}%" if b_p else "-"
+        pv_diff = ((pv_c - pv_p) / pv_p * 100) if pv_p else None
+        dl_diff = ((dl_c - dl_p) / dl_p * 100) if dl_p else None
+        b_diff = ((b_c - b_p) / b_p * 100) if b_p else None
+
+        pv_change = format_pct_change(pv_diff)
+        dl_change = format_pct_change(dl_diff)
+        b_change = format_pct_change(b_diff)
 
         dl_rate = f"{(dl_c / pv_c * 100):.1f}%" if pv_c else "-"
         buy_rate = f"{(b_c / pv_c * 100):.1f}%" if pv_c else "-"
@@ -573,7 +594,7 @@ def download_df(state):
     if df.empty:
         return df
     df["差额"] = df["本期"] - df["上期"]
-    df["环比变动"] = df.apply(lambda r: f"{(r['差额'] / r['上期'] * 100):.2f}%" if r["上期"] else "-", axis=1)
+    df["环比变动"] = df.apply(lambda r: format_pct_change((r['差额'] / r['上期'] * 100)) if r['上期'] else "-", axis=1)
     return df.sort_values("本期", ascending=False).reset_index(drop=True)
 
 
@@ -585,7 +606,7 @@ def buy_df(state, plan_key="lifetime"):
     if df.empty:
         return df
     df["差额"] = df["本期"] - df["上期"]
-    df["环比变动"] = df.apply(lambda r: f"{(r['差额'] / r['上期'] * 100):.2f}%" if r["上期"] else "-", axis=1)
+    df["环比变动"] = df.apply(lambda r: format_pct_change((r['差额'] / r['上期'] * 100)) if r['上期'] else "-", axis=1)
     return df.sort_values("本期", ascending=False).reset_index(drop=True)
 
 
@@ -598,7 +619,7 @@ def traffic_df(state):
     if df.empty:
         return df
     df["差额"] = df["本期"] - df["上期"]
-    df["环比变动"] = df.apply(lambda r: f"{(r['差额'] / r['上期'] * 100):.2f}%" if r["上期"] else "-", axis=1)
+    df["环比变动"] = df.apply(lambda r: format_pct_change((r['差额'] / r['上期'] * 100)) if r['上期'] else "-", axis=1)
     return df.sort_values("本期", ascending=False).reset_index(drop=True)
 
 
