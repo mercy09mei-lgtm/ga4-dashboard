@@ -1,3 +1,29 @@
+def style_table(df):
+    """
+    全局高亮样式：
+    包含 '▲' -> 绿色加粗
+    包含 '▼' -> 红色加粗
+    """
+    if df is None or df.empty:
+        return df
+
+    def highlight_delta(val):
+        s_val = str(val)
+        if "▲" in s_val:
+            return f"color: {UP_COLOR}; font-weight: 600;"
+        elif "▼" in s_val:
+            return f"color: {ACCENT}; font-weight: 600;"
+        return ""
+
+    # 对含有变动/环比的列自动染色，其余列保持默认
+    change_cols = [c for c in df.columns if any(k in c for k in ["环比", "变动", "PV环比", "下载环比", "购买环比"])]
+    if change_cols:
+        try:
+            return df.style.map(highlight_delta, subset=change_cols)
+        except AttributeError:
+            # 兼容低版本 pandas
+            return df.style.applymap(highlight_delta, subset=change_cols)
+    return df
 """GA4 看板 Web 界面：支持批量上传识别、SEO 四栏看板与产品线对比图表。"""
 import hashlib
 from datetime import datetime
