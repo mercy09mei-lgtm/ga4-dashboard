@@ -100,6 +100,9 @@ NOTEBURNER_PRODUCT_MAP = {
     "youtube": "YouTube",
 }
 
+# NoteBurner 的 SEO 购买页：常规订单页由 noteburner_seo_buy_label() 自动解析，特殊 URL 可在这里补规则
+NOTEBURNER_SEO_BUY_RULES = []
+
 # SEO 购买点击：NoteBurner 的“文件名”是订单页 URL：order-[mac-]<产品slug>[-for-windows|-for-android].html
 SEO_ORDER_SLUGS = [
     (r"netflix", "Netflix"),
@@ -149,7 +152,7 @@ def get_rules_for_site(site_domain: str):
     if "noteburner" in domain:
         return {
             "download_rules": NOTEBURNER_DOWNLOAD_RULES,
-            "seo_buy_rules": [],
+            "seo_buy_rules": NOTEBURNER_SEO_BUY_RULES,
             "seo_buy_fallback": noteburner_seo_buy_label,
             "product_map": NOTEBURNER_PRODUCT_MAP,
             "plan_map": PLAN_MAP,

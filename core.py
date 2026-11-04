@@ -169,6 +169,12 @@ def _note_excluded(excluded, kind, key, val):
         excluded.append({"类型": kind, "排除项": key, "本期数量": int(val or 0)})
 
 
+def _note_unnamed(unnamed, kind, key, example, val):
+    """数据已按原名计入，但产品名还没有映射成显示名。"""
+    if unnamed is not None and val:
+        unnamed.append({"类型": kind, "未映射项": key, "示例": example, "本期数量": int(val)})
+
+
 def _note_unmatched(unmatched, kind, key, val):
     if unmatched is not None and val:
         unmatched.append({"类型": kind, "未映射项": key, "本期数量": int(val)})
@@ -257,10 +263,9 @@ def parse_download_csv_content(text, rule_bundle, unmatched=None, excluded=None)
     return data, ga4_totals
 
 
-def classify_buy_key(key, rule_bundle):
-    """buy_<产品>_<系统?>_<套餐> → (展示名, 套餐)；套餐认不出时返回 (None, None)。
-    产品可含多段（itunes_audio），系统可省略（按站点 default_os）。"""
-    prod_map, plan_map = rule_bundle["product_map"], rule_bundle["plan_map"]
+def split_buy_key(key, rule_bundle):
+    """buy_<产品>_<系统?>_<套餐> → (原始产品段, 系统或None, 套餐或None)。产品可含多段（itunes_audio）。"""
+    plan_map = rule_bundle["plan_map"]
     tokens = [t.lower() for t in key.split("_")[1:] if t]
     plan = None
     for n in (2, 1):  # one_year 占两段
@@ -268,20 +273,25 @@ def classify_buy_key(key, rule_bundle):
             plan = plan_map["_".join(tokens[-n:])]
             tokens = tokens[:-n]
             break
-    if plan is None or not tokens:
-        return None, None
     os_label = None
     for i, t in enumerate(tokens):
         if t in rules.OS_TOKENS and i > 0:
             os_label = rules.OS_TOKENS[t]
             tokens.pop(i)
             break
-    raw_prod = "_".join(tokens)
-    prod = prod_map.get(raw_prod, raw_prod)
+    return "_".join(tokens), os_label, plan
+
+
+def classify_buy_key(key, rule_bundle):
+    """buy key → (展示名, 套餐)；套餐认不出时返回 (None, None)。系统可省略（按站点 default_os）。"""
+    raw_prod, os_label, plan = split_buy_key(key, rule_bundle)
+    if plan is None or not raw_prod:
+        return None, None
+    prod = rule_bundle["product_map"].get(raw_prod, raw_prod)
     return f"{prod} {os_label or rule_bundle.get('default_os', 'win')}", plan
 
 
-def parse_buy_csv_content(text, rule_bundle, unmatched=None):
+def parse_buy_csv_content(text, rule_bundle, unmatched=None, unnamed=None):
     """解析真正的订单结算表 buy.csv（带对比期 / 单时间段两种布局都支持）"""
     if not text:
         return None, None
@@ -324,6 +334,9 @@ def parse_buy_csv_content(text, rule_bundle, unmatched=None):
                     _note_unmatched(unmatched, "购买量", current_key, val)
                 continue
             data[norm_plan].setdefault(target_col, {"cur": 0, "prev": 0})[p_key] += int(val)
+            raw_prod = split_buy_key(current_key, rule_bundle)[0]
+            if p_key == "cur" and raw_prod not in rule_bundle["product_map"]:
+                _note_unnamed(unnamed, "购买产品名", raw_prod, current_key, val)
     return data, ga4_totals
 
 
@@ -535,7 +548,7 @@ def slot_has_compare(slot, text):
     return _has_compare(list(csv.reader(text.splitlines())))
 
 
-def build_state(texts):
+def build_state(texts, extra_rules=None):
     if not any(texts.values()):
         return None
 
@@ -555,8 +568,9 @@ def build_state(texts):
             if date_info["type"] == "unknown" or (date_info["type"] == "single" and d["type"] == "custom"):
                 date_info = d
 
-    rule_bundle = rules.get_rules_for_site(site_domain)
+    rule_bundle = merge_extra_rules(rules.get_rules_for_site(site_domain), extra_rules, site_domain)
     unmatched = []
+    unnamed = []
     excluded = []
 
     # 各文件的本期时间段不一致时给出提示（例如 NB 的 buy 是 10.06-11.02，网页 PV 是 10.01-10.31）
@@ -569,7 +583,9 @@ def build_state(texts):
         "date_mismatch": date_mismatch,
         "has_cmp": {k: slot_has_compare(k, texts.get(k)) for k in SLOT_KEYS},
         "unmatched": unmatched,
+        "unnamed": unnamed,
         "excluded": excluded,
+        "site_domain": site_domain or "",
         "site": site_domain.capitalize() if site_domain else "Sidify.de",
         "dl": None, "dl_tot": None,
         "buy": None, "buy_tot": None,
@@ -583,7 +599,7 @@ def build_state(texts):
     if texts.get("download"):
         state["dl"], state["dl_tot"] = parse_download_csv_content(texts["download"], rule_bundle, unmatched, excluded)
     if texts.get("buy"):
-        state["buy"], state["buy_tot"] = parse_buy_csv_content(texts["buy"], rule_bundle, unmatched)
+        state["buy"], state["buy_tot"] = parse_buy_csv_content(texts["buy"], rule_bundle, unmatched, unnamed)
     if texts.get("traffic"):
         state["tf"] = parse_traffic_csv_content(texts["traffic"])
     if texts.get("seo"):
@@ -949,3 +965,218 @@ def export_pdf(report):
         story.append(Spacer(1, 10))
     doc.build(story)
     return buf.getvalue()
+
+
+# ================= 规则建议：从未映射项生成建议、试用、生成 rules.py 代码 =================
+_INSTALL_EXT = re.compile(r"\.(exe|dmg|apk|msi|pkg|zip)$", re.I)
+_GENERIC_TAIL = {"setup", "installer", "install", "converter", "downloader", "recorder", "x64", "x86", "win", "mac"}
+
+
+def _site_brand(domain):
+    d = (domain or "").lower().replace("www.", "")
+    return re.sub(r"[^a-z0-9].*$", "", d)  # tunepat.de → tunepat
+
+
+def _installer_stem(url):
+    name = urlparse(url).path.rsplit("/", 1)[-1].lower() or url.lower()
+    name = _INSTALL_EXT.sub("", name)
+    return re.sub(r"-arm$", "", name), url.lower().split("?")[0].endswith(".apk")
+
+
+def _guess_product(stem, brand):
+    toks = [t for t in stem.split("-") if t]
+    while toks and toks[0] in {brand, "nb", "tp"}:
+        toks = toks[1:]
+    while toks and toks[-1] in _GENERIC_TAIL:
+        toks = toks[:-1]
+    return "-".join(toks) or stem
+
+
+def _guess_os(text):
+    t = text.lower()
+    if "android" in t:
+        return "Android"
+    if "windows" in t or "-win" in t or "_win" in t:
+        return "Win"
+    if "mac" in t:
+        return "Mac"
+    return "未标注"
+
+
+def _seo_buy_fragment(url):
+    segs = [s for s in urlparse(url).path.split("/") if s]
+    if not segs:
+        return url
+    last = re.sub(r"\.html?$", "", segs[-1], flags=re.I)
+    if "buynow" in last.lower() and len(segs) >= 2:
+        return segs[-2] + "/" + last
+    return last
+
+
+def _guess_buy_plan_token(key):
+    toks = [t for t in key.lower().split("_")[1:] if t and t not in rules.OS_TOKENS]
+    return "_".join(toks[-2:]) if len(toks) >= 3 else (toks[-1] if toks else key)
+
+
+def build_rule_suggestions(state):
+    """把未映射项整理成最多 4 张可编辑的建议表：installers / buy_products / buy_plans / seo_buy（没有的不出现）。"""
+    brand = _site_brand(state.get("site_domain"))
+    out = {}
+    items = state.get("unmatched") or []
+
+    inst = {}
+    for it in items:
+        if it["类型"] in ("客户端下载", "SEO下载点击") and str(it["未映射项"]).startswith("http"):
+            stem, is_apk = _installer_stem(it["未映射项"])
+            row = inst.setdefault(stem, {"文件名主干": stem, "示例文件": it["未映射项"], "本期次数": 0,
+                                         "产品显示名": _guess_product(stem, brand), "含安卓包": False})
+            row["本期次数"] += it["本期数量"]
+            row["含安卓包"] = row["含安卓包"] or is_apk
+    if inst:
+        out["installers"] = pd.DataFrame(list(inst.values())).sort_values("本期次数", ascending=False).reset_index(drop=True)
+
+    prods = {}
+    for it in state.get("unnamed") or []:
+        if it["类型"] == "购买产品名":
+            row = prods.setdefault(it["未映射项"], {"产品段": it["未映射项"], "示例key": it["示例"],
+                                                  "本期次数": 0, "产品显示名": it["未映射项"]})
+            row["本期次数"] += it["本期数量"]
+    if prods:
+        out["buy_products"] = pd.DataFrame(list(prods.values())).sort_values("本期次数", ascending=False).reset_index(drop=True)
+
+    plans = {}
+    for it in items:
+        if it["类型"] == "购买量":
+            tok = _guess_buy_plan_token(it["未映射项"])
+            row = plans.setdefault(tok, {"套餐标识": tok, "示例key": it["未映射项"], "本期次数": 0, "套餐": "12M"})
+            row["本期次数"] += it["本期数量"]
+    if plans:
+        out["buy_plans"] = pd.DataFrame(list(plans.values())).sort_values("本期次数", ascending=False).reset_index(drop=True)
+
+    sbuy = {}
+    for it in items:
+        if it["类型"] == "SEO购买点击" and str(it["未映射项"]).startswith("http"):
+            frag = _seo_buy_fragment(it["未映射项"])
+            words = re.sub(r"(buynow|windows|win|mac|android|converter|downloader|order|for|html)", " ", frag, flags=re.I)
+            words = re.sub(r"[-_/]+", " ", words).split()
+            prod = words[0].capitalize() if words else "Product"
+            guess = prod + " " + _guess_os(it["未映射项"])
+            row = sbuy.setdefault(frag, {"匹配片段": frag, "示例URL": it["未映射项"], "本期次数": 0, "产品+系统": guess})
+            row["本期次数"] += it["本期数量"]
+    if sbuy:
+        out["seo_buy"] = pd.DataFrame(list(sbuy.values())).sort_values("本期次数", ascending=False).reset_index(drop=True)
+    return out
+
+
+def _rows(df, name_col):
+    """只取填了名称的行。"""
+    if df is None:
+        return []
+    return [r for _, r in df.iterrows() if str(r.get(name_col, "")).strip()]
+
+
+def _regex_fragment(frag):
+    return str(frag).replace(".", "\\.")
+
+
+def edits_to_extra_rules(edits):
+    """用户在表格里确认后的结果 → 额外规则（仅本次会话生效）。edits: {表名: DataFrame}"""
+    extra = {"download": [], "product_map": {}, "plan_map": {}, "seo_buy": []}
+    for r in _rows(edits.get("installers"), "产品显示名"):
+        extra["download"] += rules.dl(str(r["文件名主干"]), str(r["产品显示名"]).strip(), apk=bool(r.get("含安卓包")))
+    for r in _rows(edits.get("buy_products"), "产品显示名"):
+        extra["product_map"][str(r["产品段"]).lower()] = str(r["产品显示名"]).strip()
+    for r in _rows(edits.get("buy_plans"), "套餐"):
+        extra["plan_map"][str(r["套餐标识"]).lower()] = str(r["套餐"]).strip()
+    for r in _rows(edits.get("seo_buy"), "产品+系统"):
+        extra["seo_buy"].append((_regex_fragment(r["匹配片段"]), str(r["产品+系统"]).strip()))
+    return extra
+
+
+def merge_extra_rules(bundle, extra, site_domain=None):
+    """把试用规则并入站点规则包（试用规则优先）。未知品牌站点（非 sidify / noteburner）没写系统时标“未标注”。"""
+    b = dict(bundle)
+    d = (site_domain or "").lower()
+    if d and "sidify" not in d and "noteburner" not in d:
+        b["default_os"] = "未标注"
+    if not extra:
+        return b
+    b["download_rules"] = list(extra.get("download", [])) + list(b["download_rules"])
+    b["seo_buy_rules"] = list(extra.get("seo_buy", [])) + list(b["seo_buy_rules"])
+    b["product_map"] = {**b["product_map"], **extra.get("product_map", {})}
+    b["plan_map"] = {**b["plan_map"], **extra.get("plan_map", {})}
+    return b
+
+
+def generate_rules_code(site_domain, edits):
+    """生成可复制进 rules.py 的代码：已有站点给“追加到哪个列表”的片段，新品牌站点给完整的新站点模板。"""
+    d = (site_domain or "").lower()
+    known = "NOTEBURNER" if "noteburner" in d else ("SIDIFY" if "sidify" in d else None)
+    brand = _site_brand(d)
+    prefix = known or (re.sub(r"[^A-Z0-9]", "", brand.upper()) or "NEWSITE")
+
+    dl_lines = []
+    for r in _rows(edits.get("installers"), "产品显示名"):
+        apk = ", apk=True" if r.get("含安卓包") else ""
+        dl_lines.append('dl("%s", "%s"%s)' % (r["文件名主干"], str(r["产品显示名"]).strip(), apk))
+    pm_lines = ['"%s": "%s",' % (str(r["产品段"]).lower(), str(r["产品显示名"]).strip()) for r in _rows(edits.get("buy_products"), "产品显示名")]
+    plan_lines = ['"%s": "%s",' % (str(r["套餐标识"]).lower(), str(r["套餐"]).strip()) for r in _rows(edits.get("buy_plans"), "套餐")]
+    sb_lines = ['(r"%s", "%s"),' % (_regex_fragment(r["匹配片段"]), str(r["产品+系统"]).strip()) for r in _rows(edits.get("seo_buy"), "产品+系统")]
+
+    if known:
+        out = []
+        if dl_lines:
+            if known == "SIDIFY":
+                out.append("# ① 加到 SIDIFY_DOWNLOAD_RULES 列表里（* 号会把 dl() 生成的规则展开）\n" + "\n".join("    *%s," % x for x in dl_lines))
+            else:
+                out.append("# ① 加到 NOTEBURNER_DOWNLOAD_RULES 末尾（括号内，用 + 连接）\n" + "\n".join("    + %s" % x for x in dl_lines))
+        if pm_lines:
+            out.append("# ② 加到 %s_PRODUCT_MAP 里\n" % known + "\n".join("    " + x for x in pm_lines))
+        if plan_lines:
+            out.append("# ③ 加到 PLAN_MAP 里（值只能是 lifetime / 12M / 3M / 1M）\n" + "\n".join("    " + x for x in plan_lines))
+        if sb_lines:
+            out.append("# ④ 加到 %s_SEO_BUY_RULES 里（靠前的规则优先匹配）\n" % known + "\n".join("    " + x for x in sb_lines))
+        return "\n\n".join(out) if out else "# 暂无可生成的规则：请先在上面的表格里填写“产品显示名”等必填项。"
+
+    # —— 新品牌站点：生成完整模板 ——
+    if dl_lines:
+        dl_block = "(\n    " + "\n    + ".join(dl_lines) + "\n)"
+    else:
+        dl_block = "[]"
+    code = "# ===== %s 规则（新站点：整段加到 rules.py 里 get_rules_for_site 之前）=====\n" % prefix.title()
+    code += "%s_DOWNLOAD_RULES = %s\n\n" % (prefix, dl_block)
+    code += "%s_PRODUCT_MAP = {\n%s\n}\n\n" % (prefix, "\n".join("    " + x for x in pm_lines))
+    code += "%s_SEO_BUY_RULES = [\n%s\n]\n" % (prefix, "\n".join("    " + x for x in sb_lines))
+    if plan_lines:
+        code += "\n# 另外在 PLAN_MAP 里追加（所有站点共用）：\n" + "\n".join("    " + x for x in plan_lines) + "\n"
+    code += "\n# 然后在 get_rules_for_site() 里、`if \"noteburner\" in domain:` 之前加上这一段：\n"
+    code += '    if "%s" in domain:\n' % (brand or prefix.lower())
+    code += "        return {\n"
+    code += '            "download_rules": %s_DOWNLOAD_RULES,\n' % prefix
+    code += '            "seo_buy_rules": %s_SEO_BUY_RULES,\n' % prefix
+    code += '            "seo_buy_fallback": None,\n'
+    code += '            "product_map": %s_PRODUCT_MAP,\n' % prefix
+    code += '            "plan_map": PLAN_MAP,\n'
+    code += '            "default_os": "未标注",\n'
+    code += '            "exclude_pattern": EXCLUDE_URL_PATTERN,\n'
+    code += "        }\n"
+    return code
+
+
+def build_ai_prompt(state, suggestions):
+    """可复制给任意 AI 的提示词：只含未映射的文件名 / key 和规则格式，不含任何业务数据。"""
+    lines = ["站点域名：%s" % (state.get("site_domain") or "未知"), "", "以下是我的 GA4 看板没有识别的项目（括号内是本期次数，仅供判断主次）："]
+    spec = [("installers", "安装包文件", "示例文件"), ("buy_products", "购买 key 的产品段", "示例key"),
+            ("buy_plans", "购买 key 的套餐段", "示例key"), ("seo_buy", "SEO 购买页 URL", "示例URL")]
+    for key, title, col in spec:
+        df = suggestions.get(key)
+        if df is None:
+            continue
+        lines.append("\n【%s】" % title)
+        lines += ["- %s（%s）" % (r[col], r["本期次数"]) for _, r in df.iterrows()]
+    lines += ["", "请按下面的格式，帮我生成 rules.py 的新增规则，并说明每个产品名的判断依据：",
+              '1. 安装包：dl("文件名主干", "产品名")，.exe/.dmg/-arm 自动生成，有安卓包加 apk=True',
+              '2. 购买 key（buy_产品_系统_套餐）：在 PRODUCT_MAP 里加 "产品段": "显示名"',
+              '3. SEO 购买页：(r"URL 匹配片段", "产品 系统")，系统写 Win / Mac / Android',
+              "拿不准的产品名请标出来让我确认，不要猜。"]
+    return "\n".join(lines)

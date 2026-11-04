@@ -1,6 +1,7 @@
 """GA4 看板 Web 界面：全看板可视化图表（下载量/购买量/渠道流量/SEO对比分析）、批量上传识别与红绿高亮。"""
 import hashlib
 from datetime import datetime
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 import core
@@ -55,6 +56,8 @@ def style_table(df):
 
 st.session_state.setdefault("history", [])
 st.session_state.setdefault("view", "live")
+st.session_state.setdefault("extra_rules", None)   # 本次会话试用的额外规则
+st.session_state.setdefault("trial_edits", None)   # 试用规则对应的建议表（用于继续生成代码）
 st.session_state.setdefault("in_inc", "/guide/")
 st.session_state.setdefault("in_exc", "")
 
@@ -96,7 +99,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("##### 历史记录 (最多 3 条)")
-    live_state = core.build_state(texts)
+    live_state = core.build_state(texts, extra_rules=st.session_state.extra_rules)
     live_sig = hashlib.md5("".join(texts[k] or "-" for k in core.SLOT_KEYS).encode("utf-8")).hexdigest()[:8] if live_state else None
 
     if live_state and st.session_state.view == "live":
@@ -159,8 +162,79 @@ if excl_sum:
 df_unmatched = core.unmatched_df(state)
 if df_unmatched is not None and not df_unmatched.empty:
     with st.expander(f"⚠️ 有 {len(df_unmatched)} 项未命中映射规则（合计 {int(df_unmatched['本期数量'].sum())}），点开查看", expanded=False):
-        st.caption("这些数据没有计入对应产品。如需归类，请在 rules.py 里补一行规则；无关的产品可忽略。")
+        st.caption("这些数据没有计入对应产品。如需归类，请使用下方「规则建议」面板；无关的产品可忽略。")
         st.dataframe(df_unmatched, hide_index=True, width="stretch")
+
+# ================= 规则建议面板（仅当前上传数据的实时视图） =================
+def _merge_extra(old, new):
+    if not old:
+        return new
+    return {"download": old["download"] + new["download"],
+            "seo_buy": old["seo_buy"] + new["seo_buy"],
+            "product_map": {**old["product_map"], **new["product_map"]},
+            "plan_map": {**old["plan_map"], **new["plan_map"]}}
+
+
+if st.session_state.view == "live":
+    suggestions = core.build_rule_suggestions(state)
+    trial = st.session_state.trial_edits
+    if suggestions or trial:
+        n_sug = sum(len(df) for df in suggestions.values())
+        title = f"🛠️ 规则建议：有 {n_sug} 项可以加进规则" if suggestions else "🛠️ 已试用的规则（复制到 rules.py 后永久生效）"
+        with st.expander(title, expanded=bool(suggestions)):
+            if suggestions:
+                st.caption("程序根据未识别的文件名、购买 key、订单页 URL 猜了产品名。**请核对「产品显示名」等可编辑列**（白色可改，灰色只读），"
+                           "留空的行会被忽略。先点「本次试用」看分类结果对不对，满意后复制下方代码到 rules.py。")
+                edits = {}
+                if "installers" in suggestions:
+                    st.markdown("**① 安装包文件**（客户端下载 / SEO 下载点击里没识别的）")
+                    edits["installers"] = st.data_editor(
+                        suggestions["installers"], key="ed_inst", hide_index=True, width="stretch",
+                        disabled=["文件名主干", "示例文件", "本期次数"],
+                        column_config={"产品显示名": st.column_config.TextColumn(help="显示在下载表里的产品名，如 spotify、musicOne"),
+                                       "含安卓包": st.column_config.CheckboxColumn(help="有 .apk 安装包时勾选，安卓下载取 mobile + tablet")})
+                if "buy_products" in suggestions:
+                    st.markdown("**② 购买 key 里的产品段**（数据已按原名显示，这里统一成产品名）")
+                    edits["buy_products"] = st.data_editor(
+                        suggestions["buy_products"], key="ed_bprod", hide_index=True, width="stretch",
+                        disabled=["产品段", "示例key", "本期次数"])
+                if "buy_plans" in suggestions:
+                    st.markdown("**③ 购买 key 里的套餐段**（没识别出订阅类型，这部分数据暂未计入）")
+                    edits["buy_plans"] = st.data_editor(
+                        suggestions["buy_plans"], key="ed_bplan", hide_index=True, width="stretch",
+                        disabled=["示例key", "本期次数"],
+                        column_config={"套餐": st.column_config.SelectboxColumn(options=["lifetime", "12M", "3M", "1M"], required=True)})
+                if "seo_buy" in suggestions:
+                    st.markdown("**④ SEO 购买页 URL**（SEO 购买点击里没识别的）")
+                    edits["seo_buy"] = st.data_editor(
+                        suggestions["seo_buy"], key="ed_sbuy", hide_index=True, width="stretch",
+                        disabled=["示例URL", "本期次数"],
+                        column_config={"产品+系统": st.column_config.TextColumn(help="格式：产品名 + 空格 + Win / Mac / Android，如 Spotify Win")})
+
+                if st.button("▶ 本次试用这些规则", type="primary", key="btn_trial"):
+                    new_extra = core.edits_to_extra_rules(edits)
+                    st.session_state.extra_rules = _merge_extra(st.session_state.extra_rules, new_extra)
+                    old_rec = st.session_state.trial_edits or {}
+                    st.session_state.trial_edits = {
+                        k: (old_rec.get(k, []) + df.to_dict("records")) for k, df in edits.items()
+                    } | {k: v for k, v in old_rec.items() if k not in edits}
+                    st.rerun()
+
+                st.markdown("**复制到 rules.py 的代码**")
+                st.code(core.generate_rules_code(state.get("site_domain"), edits), language="python")
+                with st.expander("🤖 想让 AI 帮忙判断产品名？复制这段提示词（不含任何业务数据）"):
+                    st.code(core.build_ai_prompt(state, suggestions), language="text")
+
+            if trial:
+                if suggestions:
+                    st.markdown("---")
+                st.success("已在本次会话中试用上面的规则（刷新页面后失效）。确认分类正确后，把下面的代码复制到 rules.py，并把 app.py / core.py / rules.py 一起更新。")
+                trial_dfs = {k: pd.DataFrame(v) for k, v in trial.items()}
+                st.code(core.generate_rules_code(state.get("site_domain"), trial_dfs), language="python")
+                if st.button("清除试用规则", key="btn_clear_trial"):
+                    st.session_state.extra_rules = None
+                    st.session_state.trial_edits = None
+                    st.rerun()
 
 # ================= KPI 卡片 =================
 kpis = core.compute_kpis(state)
